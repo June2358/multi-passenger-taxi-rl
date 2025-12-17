@@ -300,7 +300,7 @@ RL/
 │   └── taxi_v3/                     # dqn/qlearning 등 base·tuned 모음
 ├── logs/                             # RL-Zoo가 생성하는 실험 결과 및 TensorBoard 로그
 ├── visualizations/                   # evaluate_model.py --visualize로 생성된 경로 시각화 이미지
-├── pixi.toml / pixi.lock             # 의존성(사전 CUDA 12.8 설정)
+├── pixi.toml / pixi.lock             # 의존성 및 실행 환경 관리(pixi 기반)
 └── ...
 ```
 
