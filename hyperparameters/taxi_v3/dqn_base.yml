@@ -1,0 +1,38 @@
+# DQN base hyperparameters for Taxi-v3 (decoded observation)
+# Default SB3 parameters without tuning
+# Uses TaxiDecodedObservationWrapper: 11-dim vector (taxi pos + passenger/dest one-hot)
+
+Taxi-v3:
+  # Policy type (required)
+  policy: MlpPolicy
+  
+  # Basic hyperparameters (SB3 defaults - verified from source code)
+  learning_rate: !!float 1e-4
+  exploration_fraction: 0.1
+  exploration_initial_eps: 1.0
+  exploration_final_eps: 0.05
+  buffer_size: 1000000
+  batch_size: 32
+  learning_starts: 50000  # SB3 default (changed to 100 in 2.3.0+ for non-Atari, but 50000 is original default)
+  target_update_interval: 10000
+  gamma: 0.99
+  
+  # Policy network architecture (default)
+  # Note: Input dimension changed from 500 (one-hot) to 11 (decoded)
+  policy_kwargs: "dict(net_arch=[256, 256])"
+  
+  # Environment wrapper: decode Taxi-v3 to 11-dim meaningful vector
+  env_wrapper:
+    - envs.TaxiDecodedObservationWrapper
+  
+  # n_timesteps is required by RL-Zoo (will be overridden by --n-timesteps)
+  n_timesteps: !!float 5e5
+  
+  # Normalization settings
+  # VecNormalize will normalize observations during training
+  normalize: "{'norm_obs': True, 'norm_reward': False}"
+  
+  # Parallel environments (Off-Policy: single environment is sufficient)
+  n_envs: 1
+  
+  # device: auto

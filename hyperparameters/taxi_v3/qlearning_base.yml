@@ -1,0 +1,18 @@
+# Q-Learning base hyperparameters for Taxi-v3
+# RL-Zoo format: environment ID as key
+# Uses original Taxi-v3 environment (Discrete 500 states, no wrapper)
+
+Taxi-v3:
+  # Q-Learning baseline parameters
+  episodes: 5000
+  learning_rate: 0.1
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_episodes: 500
+  
+  # Q-Learning uses original environment (no wrapper)
+  # Taxi-v3 already provides Discrete(500) state space, so use it as-is
+  # env_wrapper: []  # Empty list or comment out
+  
+  n_timesteps: !!float 5e5
