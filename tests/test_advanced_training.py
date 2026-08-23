@@ -8,10 +8,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import yaml
 from sb3_contrib import MaskablePPO
 
-from evaluate_model import load_evaluation_env_kwargs, resolve_run_artifacts
+from evaluate_model import (
+    evaluate_scenarios,
+    load_evaluation_env_kwargs,
+    resolve_run_artifacts,
+)
 from train_advanced_taxi_maskableppo import build_parser, train
 
 
@@ -57,8 +62,10 @@ class AdvancedTaxiTrainingTests(unittest.TestCase):
                     str(tensorboard_dir),
                     "--eval-freq",
                     "4",
-                    "--eval-episodes",
-                    "1",
+                    "--validation-seed-start",
+                    "100",
+                    "--validation-seeds-per-scenario",
+                    "2",
                     "--seed",
                     "7",
                     "--verbose",
@@ -76,8 +83,9 @@ class AdvancedTaxiTrainingTests(unittest.TestCase):
             artifacts = resolve_run_artifacts(
                 logs_dir,
                 "maskableppo",
-                "AdvancedTaxi-v1",
+                "AdvancedTaxi-v2",
                 1,
+                "final",
             )
             self.assertEqual(artifacts.run_dir, run_dir)
             self.assertTrue((run_dir / "best_model.zip").is_file())
@@ -85,14 +93,47 @@ class AdvancedTaxiTrainingTests(unittest.TestCase):
             self.assertTrue((run_dir / "evaluations.npz").is_file())
             self.assertTrue(artifacts.vecnormalize.is_file())
 
+            best_artifacts = resolve_run_artifacts(
+                logs_dir,
+                "maskableppo",
+                "AdvancedTaxi-v2",
+                1,
+                "best",
+            )
+            self.assertEqual(
+                best_artifacts.vecnormalize,
+                run_dir / "best_model_vecnormalize.pkl",
+            )
+
+            with np.load(run_dir / "evaluations.npz") as evaluations:
+                self.assertEqual(
+                    evaluations["scenarios"].tolist(),
+                    ["random", "cluster", "complex"],
+                )
+                self.assertEqual(evaluations["validation_seeds"].tolist(), [100, 101])
+                self.assertEqual(evaluations["results"].shape, (2, 3, 2))
+
             eval_kwargs = load_evaluation_env_kwargs(artifacts)
             self.assertEqual(eval_kwargs["num_passengers"], 2)
             self.assertEqual(eval_kwargs["grid_size"], 20)
             self.assertEqual(eval_kwargs["scenario_mode"], "random")
-            self.assertEqual(eval_kwargs["mix_noise_std"], 0.0)
+            saved_args = yaml.safe_load(artifacts.args.read_text(encoding="utf-8"))
+            self.assertEqual(saved_args["actual_timesteps"], 8)
 
             model = MaskablePPO.load(str(artifacts.model), device="cpu")
             self.assertEqual(model.action_space.n, 2)
+
+            results_path = run_dir / "smoke_final.npz"
+            evaluate_scenarios(
+                model=model,
+                vecnormalize_path=artifacts.vecnormalize,
+                env_kwargs=eval_kwargs,
+                results_path=results_path,
+                checkpoint=artifacts.checkpoint,
+                num_seeds=1,
+                seed_start=200,
+            )
+            self.assertTrue(results_path.is_file())
 
 
 if __name__ == "__main__":

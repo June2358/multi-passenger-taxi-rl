@@ -1,4 +1,4 @@
-"""Train MaskablePPO on AdvancedTaxi-v1 using public SB3 APIs only."""
+"""Train MaskablePPO on AdvancedTaxi-v2 using public SB3 APIs only."""
 
 from __future__ import annotations
 
@@ -6,29 +6,30 @@ import argparse
 import ast
 import inspect
 import re
-import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
+import numpy as np
 import torch
 import yaml
 from sb3_contrib import MaskablePPO
-from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from sb3_contrib.common.maskable.utils import get_action_masks
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.vec_env import (
+    VecEnv,
+    VecNormalize,
+    sync_envs_normalization,
+)
 from torch import nn
 
+from envs.envs import AdvancedTimeAttackTaxiEnv
+
 ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-import envs  # noqa: E402,F401  # Register AdvancedTaxi-v1 with Gymnasium.
-from envs.envs import AdvancedTimeAttackTaxiEnv  # noqa: E402
-
 
 ALGO = "maskableppo"
-ENV_ID = "AdvancedTaxi-v1"
+ENV_ID = "AdvancedTaxi-v2"
 DEFAULT_CONFIG_PATH = ROOT / "hyperparameters" / "advanced_taxi" / "maskableppo_base.yml"
 
 TRAIN_ENV_KWARGS: dict[str, Any] = {
@@ -37,10 +38,8 @@ TRAIN_ENV_KWARGS: dict[str, Any] = {
     "scenario_mode": "mixed",
     "start_at_center": False,
     "scenario_mix": [0.4, 0.3, 0.3],
-    "mix_noise_std": 0.05,
-    "mix_epsilon": 1e-3,
 }
-EVAL_ENV_OVERRIDES: dict[str, Any] = {"mix_noise_std": 0.0}
+VALIDATION_SCENARIOS = ("random", "cluster", "complex")
 
 _TOP_LEVEL_CONFIG_KEYS = {
     "policy",
@@ -78,19 +77,102 @@ _ACTIVATION_FUNCTIONS = {
 }
 
 
-class SaveBestVecNormalizeCallback(BaseCallback):
-    """Persist normalization statistics paired with ``best_model.zip``."""
+class FixedScenarioEvalCallback(BaseCallback):
+    """Select the best model on the same fixed seeds for every scenario."""
 
-    def __init__(self, save_path: Path) -> None:
-        super().__init__()
-        self.save_path = save_path
+    def __init__(
+        self,
+        eval_envs: Mapping[str, VecEnv],
+        validation_seeds: Sequence[int],
+        eval_freq: int,
+        save_dir: Path,
+        verbose: int = 0,
+    ) -> None:
+        super().__init__(verbose)
+        if tuple(eval_envs) != VALIDATION_SCENARIOS:
+            raise ValueError(f"평가 환경 순서는 {VALIDATION_SCENARIOS}여야 합니다.")
+        if len(validation_seeds) == 0:
+            raise ValueError("validation seed가 비어 있습니다.")
+        self.eval_envs = dict(eval_envs)
+        self.validation_seeds = np.asarray(validation_seeds, dtype=np.int64)
+        self.eval_freq = eval_freq
+        self.save_dir = save_dir
+        self.best_mean_reward = -np.inf
+        self.evaluation_timesteps: list[int] = []
+        self.evaluation_results: list[np.ndarray] = []
+
+    def _evaluate(self, eval_env: VecEnv) -> np.ndarray:
+        rewards = np.empty(len(self.validation_seeds), dtype=np.float64)
+        for index, seed in enumerate(self.validation_seeds):
+            eval_env.seed(int(seed))
+            observation = eval_env.reset()
+            episode_reward = 0.0
+            done = False
+            while not done:
+                masks = get_action_masks(eval_env)
+                action, _ = self.model.predict(
+                    observation,
+                    action_masks=masks,
+                    deterministic=True,
+                )
+                observation, step_rewards, dones, _ = eval_env.step(action)
+                episode_reward += float(np.asarray(step_rewards)[0])
+                done = bool(np.asarray(dones)[0])
+            rewards[index] = episode_reward
+        return rewards
+
+    def _save_evaluations(self) -> None:
+        np.savez_compressed(
+            self.save_dir / "evaluations.npz",
+            timesteps=np.asarray(self.evaluation_timesteps, dtype=np.int64),
+            scenarios=np.asarray(VALIDATION_SCENARIOS),
+            validation_seeds=self.validation_seeds,
+            results=np.asarray(self.evaluation_results, dtype=np.float64),
+        )
 
     def _on_step(self) -> bool:
-        vec_normalize = self.model.get_vec_normalize_env()
-        if vec_normalize is None:
-            raise RuntimeError("best model의 VecNormalize 환경을 찾을 수 없습니다.")
-        vec_normalize.save(str(self.save_path))
+        if self.n_calls % self.eval_freq != 0:
+            return True
+
+        if self.model.get_vec_normalize_env() is not None:
+            for eval_env in self.eval_envs.values():
+                sync_envs_normalization(self.training_env, eval_env)
+
+        scenario_results = np.stack(
+            [self._evaluate(self.eval_envs[name]) for name in VALIDATION_SCENARIOS]
+        )
+        mean_reward = float(scenario_results.mean())
+        self.evaluation_timesteps.append(self.num_timesteps)
+        self.evaluation_results.append(scenario_results)
+        self._save_evaluations()
+
+        for index, scenario in enumerate(VALIDATION_SCENARIOS):
+            self.logger.record(
+                f"eval/{scenario}_mean_reward",
+                float(scenario_results[index].mean()),
+            )
+        self.logger.record("eval/mean_reward", mean_reward)
+        self.logger.dump(self.num_timesteps)
+
+        if self.verbose > 0:
+            print(
+                f"Validation num_timesteps={self.num_timesteps}, "
+                f"scenario_macro_mean_reward={mean_reward:.2f}"
+            )
+
+        if mean_reward > self.best_mean_reward:
+            self.model.save(str(self.save_dir / "best_model"))
+            vec_normalize = self.model.get_vec_normalize_env()
+            if vec_normalize is not None:
+                vec_normalize.save(
+                    str(self.save_dir / "best_model_vecnormalize.pkl")
+                )
+            self.best_mean_reward = mean_reward
         return True
+
+    def close(self) -> None:
+        for eval_env in self.eval_envs.values():
+            eval_env.close()
 
 
 def _positive_int(value: Any, label: str) -> int:
@@ -266,8 +348,21 @@ def resolve_env_kwargs(
     eval_groups: Sequence[Sequence[str]] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     train_kwargs = parse_env_kwargs(TRAIN_ENV_KWARGS, train_groups)
-    eval_defaults = {**train_kwargs, **EVAL_ENV_OVERRIDES}
-    eval_kwargs = parse_env_kwargs(eval_defaults, eval_groups)
+    eval_kwargs = parse_env_kwargs(train_kwargs, eval_groups)
+
+    train_env = AdvancedTimeAttackTaxiEnv(**train_kwargs)
+    eval_env = AdvancedTimeAttackTaxiEnv(**eval_kwargs)
+    try:
+        if (
+            train_env.observation_space != eval_env.observation_space
+            or train_env.action_space != eval_env.action_space
+        ):
+            raise ValueError(
+                "평가 환경의 observation/action space는 학습 환경과 같아야 합니다."
+            )
+    finally:
+        train_env.close()
+        eval_env.close()
     return train_kwargs, eval_kwargs
 
 
@@ -309,7 +404,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--n-timesteps", type=int, help="설정 파일의 총 timestep을 덮어씀")
     parser.add_argument("--eval-freq", type=int, default=10_000, help="평가 간격; 0이면 평가 안 함")
-    parser.add_argument("--eval-episodes", type=int, default=5, help="평가 시 episode 수")
+    parser.add_argument(
+        "--validation-seed-start",
+        type=int,
+        default=1_000,
+        help="고정 validation seed 시작값",
+    )
+    parser.add_argument(
+        "--validation-seeds-per-scenario",
+        type=int,
+        default=5,
+        help="시나리오별 고정 validation seed 수",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
@@ -352,7 +458,14 @@ def train(args: argparse.Namespace) -> Path:
         else _positive_int(args.n_timesteps, "--n-timesteps")
     )
     eval_freq = _non_negative_int(args.eval_freq, "--eval-freq")
-    eval_episodes = _positive_int(args.eval_episodes, "--eval-episodes")
+    validation_seed_start = _non_negative_int(
+        args.validation_seed_start,
+        "--validation-seed-start",
+    )
+    validation_seeds_per_scenario = _positive_int(
+        args.validation_seeds_per_scenario,
+        "--validation-seeds-per-scenario",
+    )
     num_threads = _positive_int(args.num_threads, "--num-threads")
     if args.seed < 0:
         raise ValueError("--seed는 0 이상이어야 합니다.")
@@ -365,7 +478,10 @@ def train(args: argparse.Namespace) -> Path:
         args.eval_env_kwargs,
     )
     n_envs = runtime_config["n_envs"]
-    eval_seed = args.seed + n_envs
+    validation_seeds = range(
+        validation_seed_start,
+        validation_seed_start + validation_seeds_per_scenario,
+    )
 
     log_folder = args.log_folder.expanduser().resolve()
     run_dir = _create_run_dir(log_folder)
@@ -387,9 +503,9 @@ def train(args: argparse.Namespace) -> Path:
         "tensorboard_log": str(tensorboard_log),
         "n_timesteps": n_timesteps,
         "eval_freq": eval_freq,
-        "eval_episodes": eval_episodes,
+        "validation_seed_start": validation_seed_start,
+        "validation_seeds_per_scenario": validation_seeds_per_scenario,
         "seed": args.seed,
-        "eval_seed": eval_seed,
         "device": args.device,
         "num_threads": num_threads,
         "verbose": args.verbose,
@@ -401,7 +517,7 @@ def train(args: argparse.Namespace) -> Path:
     _dump_yaml(params_dir / "args.yml", saved_args)
 
     train_env = None
-    eval_env = None
+    callback: FixedScenarioEvalCallback | None = None
     try:
         train_env = make_vec_env(
             AdvancedTimeAttackTaxiEnv,
@@ -415,41 +531,36 @@ def train(args: argparse.Namespace) -> Path:
             normalize_kwargs = {} if normalize_config is True else dict(normalize_config)
             train_env = VecNormalize(train_env, training=True, **normalize_kwargs)
 
-        callback = None
         if eval_freq > 0:
-            eval_env = make_vec_env(
-                AdvancedTimeAttackTaxiEnv,
-                n_envs=1,
-                seed=eval_seed,
-                env_kwargs=eval_env_kwargs,
-            )
+            eval_envs: dict[str, VecEnv] = {}
+            eval_normalize_kwargs: dict[str, Any] | None = None
             if normalize_config is not False:
                 eval_normalize_kwargs = (
                     {} if normalize_config is True else dict(normalize_config)
                 )
                 eval_normalize_kwargs["norm_reward"] = False
-                eval_env = VecNormalize(
-                    eval_env,
-                    training=False,
-                    **eval_normalize_kwargs,
-                )
 
-            callback_freq = max(eval_freq // n_envs, 1)
-            callback_on_new_best = None
-            if isinstance(train_env, VecNormalize):
-                callback_on_new_best = SaveBestVecNormalizeCallback(
-                    run_dir / "best_model_vecnormalize.pkl"
+            for scenario in VALIDATION_SCENARIOS:
+                scenario_kwargs = {**eval_env_kwargs, "scenario_mode": scenario}
+                scenario_env: VecEnv = make_vec_env(
+                    AdvancedTimeAttackTaxiEnv,
+                    n_envs=1,
+                    env_kwargs=scenario_kwargs,
                 )
-            callback = MaskableEvalCallback(
-                eval_env,
-                callback_on_new_best=callback_on_new_best,
-                best_model_save_path=str(run_dir),
-                log_path=str(run_dir),
+                if eval_normalize_kwargs is not None:
+                    scenario_env = VecNormalize(
+                        scenario_env,
+                        training=False,
+                        **eval_normalize_kwargs,
+                    )
+                eval_envs[scenario] = scenario_env
+            callback_freq = max(eval_freq // n_envs, 1)
+            callback = FixedScenarioEvalCallback(
+                eval_envs,
+                validation_seeds,
                 eval_freq=callback_freq,
-                n_eval_episodes=eval_episodes,
-                deterministic=True,
+                save_dir=run_dir,
                 verbose=args.verbose,
-                warn=True,
             )
 
         model = MaskablePPO(
@@ -467,12 +578,14 @@ def train(args: argparse.Namespace) -> Path:
             progress_bar=args.progress,
             tb_log_name=f"{ENV_ID}_{run_dir.name.rsplit('_', 1)[-1]}",
         )
+        saved_args["actual_timesteps"] = int(model.num_timesteps)
+        _dump_yaml(params_dir / "args.yml", saved_args)
         model.save(str(run_dir / ENV_ID))
         if isinstance(train_env, VecNormalize):
             train_env.save(str(params_dir / "vecnormalize.pkl"))
     finally:
-        if eval_env is not None:
-            eval_env.close()
+        if callback is not None:
+            callback.close()
         if train_env is not None:
             train_env.close()
 

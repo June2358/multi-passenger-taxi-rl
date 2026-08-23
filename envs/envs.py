@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from numbers import Integral
+from typing import ClassVar
 
-import numpy as np
 import gymnasium as gym
+import numpy as np
 from gymnasium import spaces
+
 from envs.utils import compute_trip_time
 
 
@@ -18,7 +20,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
     - reward: 남은 승객 수 * 이동시간 (총 완료시간 합의 음수)
     """
 
-    metadata = {"render_modes": []}
+    metadata: ClassVar[dict[str, list[str]]] = {"render_modes": []}
     _SCENARIOS = ("random", "cluster", "complex")
     _SCENARIO_MODES = ("mixed", *_SCENARIOS)
 
@@ -26,11 +28,9 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         self,
         num_passengers: int = 20,
         grid_size: int = 100,
-        scenario_mode: str = "mixed",  # mixed | random | cluster | complex
-        start_at_center: bool = False,  # 검증 시 중앙 고정 용도
-        scenario_mix: tuple | list | None = None,  # mixed 모드에서 사용할 분포
-        mix_noise_std: float = 0.0,  # mixed 분포에 가우시안 노이즈(학습용 완화)
-        mix_epsilon: float = 1e-3,  # 분포 하한 (0 방지)
+        scenario_mode: str = "mixed",
+        start_at_center: bool = False,
+        scenario_mix: tuple | list | None = None,
     ):
         super().__init__()
 
@@ -62,48 +62,36 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
             )
         if not np.all(np.isfinite(validated_mix)):
             raise ValueError("scenario_mix weights must be finite")
-        if np.any(validated_mix < 0) or validated_mix.sum() <= 0:
+        mix_sum = float(validated_mix.sum())
+        if np.any(validated_mix < 0) or not np.isfinite(mix_sum) or mix_sum <= 0:
             raise ValueError(
                 "scenario_mix weights must be non-negative and contain a positive value"
             )
-
-        try:
-            validated_noise_std = float(mix_noise_std)
-            validated_epsilon = float(mix_epsilon)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("mix_noise_std and mix_epsilon must be numeric") from exc
-        if not np.isfinite(validated_noise_std) or validated_noise_std < 0:
-            raise ValueError("mix_noise_std must be finite and non-negative")
-        if not np.isfinite(validated_epsilon) or validated_epsilon <= 0:
-            raise ValueError("mix_epsilon must be finite and greater than 0")
 
         self.num_passengers = int(num_passengers)
         self.grid_size = int(grid_size)
         self.scenario_mode = scenario_mode
         self.start_at_center = bool(start_at_center)
-        self.scenario_mix = validated_mix.copy()
-        self.mix_noise_std = validated_noise_std
-        self.mix_epsilon = validated_epsilon
+        self.scenario_mix = validated_mix / mix_sum
         self.action_space = spaces.Discrete(self.num_passengers)
 
-        # 승객 1명당 6개 정보 (정규화된 상대 좌표/목적지/상태/거리)
-        # [p_dx, p_dy, dest_dx, dest_dy, status, dist]
-        # 좌표는 고정 스케일 100으로 나눔 (세부 표준화는 VecNormalize가 담당)
+        # 승객 1명당 7개 정보 (정규화된 상대 좌표/목적지/상태/거리)
+        # [p_dx, p_dy, dest_dx, dest_dy, status, pickup_dist, service_dist]
+        # 좌표와 거리는 고정 스케일 100으로 나눈다.
         max_abs = self.grid_size / 100.0  # 예: grid_size=100 -> 1.0, 200 -> 2.0
         dist_max = 2 * max_abs  # 맨해튼 거리 최대치 정규화 (0~2*grid_size/100)
         passenger_low = np.array(
-            [-max_abs, -max_abs, -max_abs, -max_abs, 0.0, 0.0], dtype=np.float32
+            [-max_abs, -max_abs, -max_abs, -max_abs, 0.0, 0.0, 0.0],
+            dtype=np.float32,
         )
         passenger_high = np.array(
-            [max_abs, max_abs, max_abs, max_abs, 1.0, dist_max], dtype=np.float32
+            [max_abs, max_abs, max_abs, max_abs, 1.0, dist_max, dist_max],
+            dtype=np.float32,
         )
         low = np.tile(passenger_low, self.num_passengers)
         high = np.tile(passenger_high, self.num_passengers)
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
-    # -------------------------
-    # Gym API
-    # -------------------------
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._init_scenario()
@@ -130,10 +118,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         passenger_origin = np.asarray(target_p[:2], dtype=int).copy()
         passenger_destination = np.asarray(target_p[2:4], dtype=int).copy()
 
-        # 거리(시간) 계산 - 유틸리티 함수 사용
         dist_empty, dist_service = compute_trip_time(self.taxi_loc, target_p)
-        dist_empty = int(dist_empty)
-        dist_service = int(dist_service)
         time_elapsed = int(dist_empty + dist_service)
 
         # 완료시간 비용에는 이번에 운송할 승객까지 포함한다.
@@ -141,7 +126,6 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         completion_cost = int(time_elapsed * remaining_passengers)
         reward = -completion_cost / 100.0  # 스케일 다운
 
-        # 상태 업데이트
         self.taxi_loc = passenger_destination.copy()
         self.passengers[action, 4] = 1
         self._remaining_passengers -= 1
@@ -162,9 +146,6 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         }
         return self._get_state(), reward, terminated, truncated, info
 
-    # -------------------------
-    # Helpers
-    # -------------------------
     def action_masks(self):
         return self.passengers[:, 4] == 0
 
@@ -173,7 +154,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         scenario = self._pick_scenario()
         self.current_scenario = scenario
         sampled_taxi_loc = self.np_random.integers(0, self.grid_size, size=2)
-        if self.start_at_center:
+        if scenario == "complex" or self.start_at_center:
             center = self.grid_size // 2
             self.taxi_loc = np.array([center, center], dtype=int)
         else:
@@ -186,7 +167,6 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
                 raw_passengers.append(list(loc) + list(dest) + [0])
 
         elif scenario == "cluster":
-            # 비율 기반 클러스터 중심 정의
             centers = [
                 np.array([int(self.grid_size * 0.2), int(self.grid_size * 0.2)]),  # Source
                 np.array([int(self.grid_size * 0.8), int(self.grid_size * 0.8)]),  # Sink
@@ -219,32 +199,28 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
             # 100x100에서의 기존 거리 구성을 비율로 유지하고, 작은
             # 그리드에서도 모든 범위가 항상 유효하도록 클립한다.
             max_coord = self.grid_size - 1
-            trap_far_offset = max(1, int(round(self.grid_size * 0.03)))
-            trap_near_offset = max(1, int(round(self.grid_size * 0.01)))
+            trap_far_offset = max(1, round(self.grid_size * 0.03))
+            trap_near_offset = max(1, round(self.grid_size * 0.01))
             trap_start_min = max(0, center - trap_far_offset)
             trap_start_max = max(0, center - trap_near_offset)
-            trap_start_max = max(trap_start_min, trap_start_max)
-            trap_col_radius = max(1, int(round(self.grid_size * 0.05)))
+            trap_col_radius = max(1, round(self.grid_size * 0.05))
             trap_col_min = max(0, center - trap_col_radius)
             trap_col_max = min(max_coord, center + trap_col_radius)
 
-            honey_near_offset = max(1, int(round(self.grid_size * 0.12)))
-            honey_far_offset = max(
-                honey_near_offset, int(round(self.grid_size * 0.22))
-            )
+            honey_near_offset = max(1, round(self.grid_size * 0.12))
+            honey_far_offset = max(1, round(self.grid_size * 0.22))
             honey_zone_start = min(max_coord, center + honey_near_offset)
             honey_zone_end = min(max_coord, center + honey_far_offset)
             north_band_size = min(
-                self.grid_size, max(1, int(round(self.grid_size * 0.05)))
+                self.grid_size, max(1, round(self.grid_size * 0.05))
             )
 
-            # 3. 함정의 개수 (적당히 섞어서 반복적으로 괴롭힘)
-            num_traps = int(self.num_passengers * 0.3)  # 30%는 함정
+            # 승객의 30%는 중앙 근처의 장거리 trap이다.
+            num_traps = int(self.num_passengers * 0.3)
 
             for i in range(self.num_passengers):
                 if i < num_traps:
-                    # [함정 승객: 악마의 셔틀]
-                    # 위치: 중앙 바로 위 (Greedy가 1순위 포착)
+                    # 중앙 근처 pickup, 북쪽 끝의 장거리 destination.
                     r_loc = self.np_random.integers(
                         trap_start_min, trap_start_max + 1
                     )
@@ -253,8 +229,6 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
                     )
                     loc = np.array([r_loc, c_loc])
 
-                    # 목적지: 맵의 최북단 끝 (지옥행)
-                    # 0행 근처로 강제 이동
                     r_dest = self.np_random.integers(0, north_band_size)
                     c_dest = self.np_random.integers(0, self.grid_size)
                     dest = np.array([r_dest, c_dest])
@@ -262,8 +236,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
                     raw_passengers.append(list(loc) + list(dest) + [0])
 
                 else:
-                    # [꿀통 승객: 남쪽의 천국]
-                    # 위치: 함정보다는 멀지만 일단 도착하면 노다지
+                    # 남동쪽 pickup, 인접한 단거리 destination.
                     r_loc = self.np_random.integers(
                         honey_zone_start, honey_zone_end + 1
                     )
@@ -272,12 +245,9 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
                     )
                     loc = np.array([r_loc, c_loc])
 
-                    # 목적지: 아주 짧은 거리 (거의 안 움직임)
-                    # 바로 옆칸 수준 (Walking distance)
                     move_noise = self.np_random.integers(-1, 2, size=2)
                     dest = np.clip(loc + move_noise, 0, self.grid_size - 1)
                     
-                    # 출발지와 도착지가 같으면 강제로 한 칸 옆으로
                     if np.array_equal(loc, dest):
                         dest[0] = dest[0] - 1 if dest[0] == max_coord else dest[0] + 1
 
@@ -292,20 +262,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
 
     def _pick_scenario(self) -> str:
         if self.scenario_mode == "mixed":
-            base_p = self.scenario_mix
-
-            if self.mix_noise_std > 0:
-                noise = self.np_random.normal(
-                    0.0, self.mix_noise_std, size=base_p.shape
-                )
-                p = base_p + noise
-            else:
-                p = base_p
-
-            p = np.clip(p, self.mix_epsilon, None)
-            p = p / p.sum()
-
-            return str(self.np_random.choice(self._SCENARIOS, p=p))
+            return str(self.np_random.choice(self._SCENARIOS, p=self.scenario_mix))
         return self.scenario_mode
 
     def _get_state(self):
@@ -314,7 +271,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         active_passengers = self.passengers[active]
 
         # 완료된 승객은 status만 1로 남기고 좌표/거리는 0으로 정리한다.
-        state = np.zeros((self.num_passengers, 6), dtype=np.float32)
+        state = np.zeros((self.num_passengers, 7), dtype=np.float32)
         state[:, 4] = self.passengers[:, 4]
 
         taxi_loc = self.taxi_loc.astype(np.float32)
@@ -324,5 +281,6 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         state[active, :2] = pickup_delta / norm
         state[active, 2:4] = destination_delta / norm
         state[active, 5] = np.abs(pickup_delta).sum(axis=1) / norm
+        state[active, 6] = np.abs(destination_delta).sum(axis=1) / norm
         return state.reshape(-1)
 

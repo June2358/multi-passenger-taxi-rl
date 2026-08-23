@@ -12,7 +12,8 @@ import yaml
 import qlearning_train
 from qlearning_train import (
     compute_td_target,
-    derive_eval_seed,
+    derive_rng_seeds,
+    load_hyperparams,
     select_epsilon_greedy_action,
 )
 
@@ -54,23 +55,6 @@ class _OneStepEnv(gym.Env):
         return 1, 1.0, not self.truncate, self.truncate, {}
 
 
-class _IncreasingRewardEnv(gym.Env):
-    metadata = {}
-
-    def __init__(self):
-        self.observation_space = gym.spaces.Discrete(2)
-        self.action_space = gym.spaces.Discrete(2)
-        self.episode = 0
-
-    def reset(self, *, seed=None, options=None):
-        super().reset(seed=seed)
-        self.episode += 1
-        return 0, {}
-
-    def step(self, action):
-        return 1, float(self.episode), True, False, {}
-
-
 class _RecordingWriter:
     instances = []
 
@@ -80,9 +64,6 @@ class _RecordingWriter:
 
     def add_scalar(self, tag, value, step):
         self.scalars.append((tag, value, step))
-
-    def flush(self):
-        pass
 
     def close(self):
         pass
@@ -203,13 +184,21 @@ Taxi-v4:
                     verbose=1,
                 )
 
-            saved_config = yaml.safe_load(
+            saved_document = yaml.safe_load(
                 (exp_dir / "config.yml").read_text(encoding="utf-8")
-            )["Taxi-v4"]
-            self.assertEqual(saved_config["n_timesteps"], 5)
-            self.assertEqual(saved_config["seed"], 17)
-            self.assertEqual(saved_config["eval_seed"], derive_eval_seed(17))
-            self.assertNotIn("episodes", saved_config)
+            )
+            saved_config = saved_document["Taxi-v4"]
+            metadata = saved_document["metadata"]
+            expected_rng_seeds = derive_rng_seeds(17)
+            self.assertEqual(metadata["n_timesteps"], 5)
+            self.assertEqual(metadata["seed"], 17)
+            self.assertEqual(metadata["rng_seeds"], expected_rng_seeds)
+            self.assertEqual(len(set(expected_rng_seeds.values())), 4)
+            self.assertNotIn("n_timesteps", saved_config)
+            self.assertEqual(
+                load_hyperparams(exp_dir / "config.yml", "Taxi-v4"),
+                saved_config,
+            )
             self.assertTrue(model_path.exists())
 
             writer = _RecordingWriter.instances[-1]
@@ -226,8 +215,13 @@ Taxi-v4:
             self.assertIn("총 에피소드: 1", output.getvalue())
 
             train_env, eval_env = created_envs
-            self.assertEqual(train_env.reset_seeds[:2], [17, None])
-            self.assertEqual(eval_env.reset_seeds[0], derive_eval_seed(17))
+            self.assertEqual(
+                train_env.reset_seeds[:2],
+                [expected_rng_seeds["train_env"], None],
+            )
+            self.assertEqual(
+                eval_env.reset_seeds[0], expected_rng_seeds["eval_env"]
+            )
             self.assertNotEqual(train_env.reset_seeds[0], eval_env.reset_seeds[0])
 
             train_rngs = {id(rng) for epsilon, rng in selection_calls if epsilon > 0.0}
@@ -236,7 +230,7 @@ Taxi-v4:
             self.assertEqual(len(eval_rngs), 1)
             self.assertTrue(train_rngs.isdisjoint(eval_rngs))
 
-    def test_same_seed_reproduces_complete_training_run(self):
+    def test_saved_config_round_trip_reproduces_complete_training_run(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             conf_file = (
@@ -256,7 +250,7 @@ Taxi-v4:
                     verbose=0,
                 )
                 _, second_model = qlearning_train.train_qlearning(
-                    conf_file=conf_file,
+                    conf_file=first_model.parent / "config.yml",
                     n_timesteps=250,
                     seed=23,
                     exp_id=1,
@@ -267,63 +261,6 @@ Taxi-v4:
             self.assertTrue(
                 np.array_equal(np.load(first_model), np.load(second_model))
             )
-
-    def test_tensorboard_metrics_are_throttled_and_final_window_is_logged(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_root = Path(temp_dir)
-            conf_file = temp_root / "qlearning.yml"
-            conf_file.write_text(
-                """
-Taxi-v4:
-  learning_rate: 0.2
-  gamma: 0.9
-  epsilon_start: 1.0
-  epsilon_end: 0.1
-  epsilon_decay_episodes: 2
-""".lstrip(),
-                encoding="utf-8",
-            )
-
-            with (
-                mock.patch.object(
-                    qlearning_train.gym,
-                    "make",
-                    side_effect=lambda _env_id: _IncreasingRewardEnv(),
-                ),
-                mock.patch.object(qlearning_train, "SummaryWriter", _RecordingWriter),
-            ):
-                exp_dir, _ = qlearning_train.train_qlearning(
-                    env_id="Taxi-v4",
-                    conf_file=conf_file,
-                    n_timesteps=401,
-                    seed=41,
-                    exp_id=1,
-                    log_dir=temp_root / "logs",
-                    verbose=0,
-                )
-
-            writer = _RecordingWriter.instances[-1]
-            rollout_rewards = [
-                scalar for scalar in writer.scalars if scalar[0] == "rollout/ep_rew_mean"
-            ]
-            self.assertEqual(
-                [step for _, _, step in rollout_rewards],
-                [200, 400, 401],
-            )
-            self.assertEqual(
-                [value for _, value, _ in rollout_rewards],
-                [150.5, 350.5, 351.5],
-            )
-
-            monitor_lines = (exp_dir / "monitor.csv").read_text(
-                encoding="utf-8"
-            ).splitlines()
-            episode_rows = [
-                line
-                for line in monitor_lines
-                if line and not line.startswith("#")
-            ][1:]
-            self.assertEqual(len(episode_rows), 401)
 
     def test_training_bootstraps_when_environment_truncates(self):
         make_count = 0
@@ -383,7 +320,7 @@ Taxi-v4:
 
     def test_non_taxi_environment_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Only Taxi-v4 is supported"):
-            qlearning_train.train_qlearning(env_id="AdvancedTaxi-v1")
+            qlearning_train.train_qlearning(env_id="AdvancedTaxi-v2")
 
     def test_obsolete_or_unknown_config_keys_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -396,11 +333,80 @@ Taxi-v4:
             with self.assertRaisesRegex(ValueError, "episodes"):
                 qlearning_train.load_hyperparams(conf_file, "Taxi-v4")
 
+            conf_file.write_text(
+                "Taxi-v4:\n  learning_rate: 0.1\nmetdata: {}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "metdata"):
+                qlearning_train.load_hyperparams(conf_file, "Taxi-v4")
+
+            conf_file.write_text(
+                "Taxi-v4:\n  learning_rate: 0.1\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "missing"):
+                qlearning_train.load_hyperparams(conf_file, "Taxi-v4")
+
+    def test_invalid_hyperparameter_ranges_are_rejected(self):
+        invalid_values = (
+            "learning_rate: 0.0",
+            "gamma: 1.1",
+            "epsilon_start: 0.1\n  epsilon_end: 0.2",
+            "epsilon_decay_episodes: 0",
+            "learning_rate: true",
+            "epsilon_decay_episodes: 2.9",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            for index, invalid_value in enumerate(invalid_values):
+                with self.subTest(invalid_value=invalid_value):
+                    conf_file = temp_root / f"invalid_{index}.yml"
+                    conf_file.write_text(
+                        (
+                            "Taxi-v4:\n"
+                            "  learning_rate: 0.1\n"
+                            "  gamma: 0.99\n"
+                            "  epsilon_start: 1.0\n"
+                            "  epsilon_end: 0.05\n"
+                            "  epsilon_decay_episodes: 500\n"
+                            f"  {invalid_value}\n"
+                        ),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(ValueError):
+                        qlearning_train.train_qlearning(
+                            conf_file=conf_file,
+                            n_timesteps=1,
+                            log_dir=temp_root / f"logs_{index}",
+                            verbose=0,
+                        )
+
     def test_invalid_run_limits_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "n_timesteps"):
             qlearning_train.train_qlearning(n_timesteps=0)
         with self.assertRaisesRegex(ValueError, "exp_id"):
             qlearning_train.train_qlearning(exp_id=0)
+        with self.assertRaisesRegex(ValueError, "seed"):
+            qlearning_train.train_qlearning(seed=-1)
+
+    def test_existing_explicit_run_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_dir = Path(temp_dir)
+            (log_dir / "Taxi-v4_1").mkdir()
+
+            with self.assertRaisesRegex(FileExistsError, "already exists"):
+                qlearning_train.train_qlearning(
+                    conf_file=(
+                        qlearning_train.ROOT
+                        / "hyperparameters"
+                        / "taxi_v4"
+                        / "qlearning_base.yml"
+                    ),
+                    n_timesteps=1,
+                    exp_id=1,
+                    log_dir=log_dir,
+                    verbose=0,
+                )
 
 
 if __name__ == "__main__":

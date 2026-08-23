@@ -1,13 +1,14 @@
 """
-AdvancedTaxi-v1 학습 모델 평가 스크립트 (시각화 포함)
+AdvancedTaxi-v2 학습 모델 평가 스크립트 (이동 구간 개략도 포함)
 
 - random / cluster / complex 시나리오에 대해
   - Random 정책
   - Greedy 정책
+  - 전체 이동거리 Greedy 정책
   - RL(MaskablePPO) 정책
   의 총 완료시간 합(sum of completion times)을 요약해서 출력합니다.
 
-- 시각화: 각 정책의 이동 경로를 그리드월드에 표시
+- 시각화: 각 정책의 이동 구간을 그리드월드에 표시
   - 승객 출발지/목적지
   - 빈차 이동 경로
   - 승객 운행 경로
@@ -18,17 +19,17 @@ from __future__ import annotations
 
 import argparse
 import inspect
-import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
+from typing import Any
 
 import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import yaml
@@ -36,23 +37,22 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.utils import get_action_masks
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-# 프로젝트 루트를 Python 경로에 추가
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-# 환경 등록
-import envs  # noqa: F401
 from envs.envs import AdvancedTimeAttackTaxiEnv
 
+ROOT = Path(__file__).resolve().parent
+
 ALGO = "maskableppo"
-ENV_ID = "AdvancedTaxi-v1"
+ENV_ID = "AdvancedTaxi-v2"
 RL_EVALUATION_BATCH_SIZE = 100
+SCENARIOS = ("random", "cluster", "complex")
+POLICIES = ("random", "greedy", "shortest_trip", "rl")
+BASELINE_POLICIES = POLICIES[:-1]
 
 
 @dataclass(frozen=True)
 class RunArtifacts:
     run_dir: Path
+    checkpoint: str
     model: Path
     vecnormalize: Path | None
     config: Path
@@ -81,17 +81,27 @@ def resolve_run_artifacts(
     algo: str,
     env_id: str,
     exp_id: int,
+    checkpoint: str,
 ) -> RunArtifacts:
-    """명시한 학습 실행의 final model과 설정 파일을 해석한다."""
+    """Resolve one explicit checkpoint and its paired normalization state."""
     if exp_id < 1:
         raise ValueError("exp_id는 1 이상이어야 합니다.")
+    if checkpoint not in {"final", "best"}:
+        raise ValueError("checkpoint는 'final' 또는 'best'여야 합니다.")
 
     run_dir = logs_dir / algo / f"{env_id}_{exp_id}"
     params_dir = run_dir / env_id
+    model_path = run_dir / (f"{env_id}.zip" if checkpoint == "final" else "best_model.zip")
+    vecnormalize_path = (
+        params_dir / "vecnormalize.pkl"
+        if checkpoint == "final"
+        else run_dir / "best_model_vecnormalize.pkl"
+    )
     artifacts = RunArtifacts(
         run_dir=run_dir,
-        model=run_dir / f"{env_id}.zip",
-        vecnormalize=(params_dir / "vecnormalize.pkl"),
+        checkpoint=checkpoint,
+        model=model_path,
+        vecnormalize=vecnormalize_path,
         config=params_dir / "config.yml",
         args=params_dir / "args.yml",
     )
@@ -100,7 +110,7 @@ def resolve_run_artifacts(
         raise FileNotFoundError(f"run을 찾을 수 없습니다: {artifacts.run_dir}")
 
     for label, path in {
-        "final model": artifacts.model,
+        "selected model": artifacts.model,
         "config": artifacts.config,
         "args": artifacts.args,
     }.items():
@@ -108,7 +118,11 @@ def resolve_run_artifacts(
             raise FileNotFoundError(f"{label}을(를) 찾을 수 없습니다: {path}")
 
     config = _load_mapping(artifacts.config)
-    normalize = config.get("normalize", False)
+    if "normalize" not in config:
+        raise ValueError(
+            f"config.yml에 normalize 계약이 없습니다: {artifacts.config}"
+        )
+    normalize = config["normalize"]
     uses_normalization = _uses_vecnormalize(normalize)
     if uses_normalization and not artifacts.vecnormalize.is_file():
         raise FileNotFoundError(
@@ -119,6 +133,7 @@ def resolve_run_artifacts(
     if not uses_normalization:
         return RunArtifacts(
             run_dir=artifacts.run_dir,
+            checkpoint=artifacts.checkpoint,
             model=artifacts.model,
             vecnormalize=None,
             config=artifacts.config,
@@ -166,46 +181,25 @@ def load_evaluation_env_kwargs(artifacts: RunArtifacts) -> dict[str, Any]:
     return dict(saved_eval_kwargs)
 
 
-def _scenario_kwargs(base_kwargs: Mapping[str, Any], scenario: str) -> dict[str, Any]:
-    kwargs = dict(base_kwargs)
-    kwargs["scenario_mode"] = scenario
-    kwargs["mix_noise_std"] = 0.0
-    return kwargs
-
-
-def _evaluation_seeds(seed_start: int, num_seeds: int) -> range:
-    if seed_start < 0:
-        raise ValueError("seed_start는 0 이상이어야 합니다.")
-    if num_seeds < 1:
-        raise ValueError("num_seeds는 1 이상이어야 합니다.")
-    return range(seed_start, seed_start + num_seeds)
-
-
-def _new_path_data(taxi_start: np.ndarray, track_path: bool) -> Dict[str, Any] | None:
+def _new_path_data(taxi_start: np.ndarray, track_path: bool) -> dict[str, Any] | None:
     if not track_path:
         return None
-    return {"taxi_start": taxi_start.tolist(), "taxi_end": None, "trips": []}
+    return {"taxi_start": taxi_start.tolist(), "trips": []}
 
 
-def _record_step(path_data: Dict[str, Any] | None, info: Mapping[str, Any]) -> None:
+def _record_step(path_data: dict[str, Any] | None, info: Mapping[str, Any]) -> None:
     if path_data is None:
         return
     origin = np.asarray(info["passenger_origin"], dtype=int).tolist()
     destination = np.asarray(info["passenger_destination"], dtype=int).tolist()
     taxi_before = np.asarray(info["taxi_before"], dtype=int).tolist()
-    taxi_after = np.asarray(info["taxi_after"], dtype=int).tolist()
     path_data["trips"].append(
         {
-            "passenger_idx": int(info["selected_passenger"]),
-            "passenger_origin": origin,
-            "passenger_dest": destination,
-            "empty_path_start": taxi_before,
-            "empty_path_end": origin,
-            "service_path_start": origin,
-            "service_path_end": destination,
+            "taxi_before": taxi_before,
+            "origin": origin,
+            "destination": destination,
         }
     )
-    path_data["taxi_end"] = taxi_after
 
 
 def _run_direct_policy(
@@ -213,7 +207,7 @@ def _run_direct_policy(
     seed: int,
     select_action: Callable[[AdvancedTimeAttackTaxiEnv], int],
     track_path: bool,
-) -> Tuple[float, Dict[str, Any] | None]:
+) -> tuple[float, dict[str, Any] | None]:
     env = AdvancedTimeAttackTaxiEnv(**dict(env_kwargs))
     try:
         env.reset(seed=seed)
@@ -236,7 +230,7 @@ def _run_random(
     env_kwargs: Mapping[str, Any],
     seed: int,
     track_path: bool = False,
-) -> Tuple[float, Dict[str, Any] | None]:
+) -> tuple[float, dict[str, Any] | None]:
     num_passengers = int(env_kwargs["num_passengers"])
     policy_rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
     order = iter(policy_rng.permutation(num_passengers).tolist())
@@ -247,7 +241,7 @@ def _run_greedy(
     env_kwargs: Mapping[str, Any],
     seed: int,
     track_path: bool = False,
-) -> Tuple[float, Dict[str, Any] | None]:
+) -> tuple[float, dict[str, Any] | None]:
     def select_action(env: AdvancedTimeAttackTaxiEnv) -> int:
         available = np.flatnonzero(np.asarray(env.action_masks(), dtype=bool))
         if available.size == 0:
@@ -266,8 +260,32 @@ def _run_greedy(
     return _run_direct_policy(env_kwargs, seed, select_action, track_path)
 
 
+def _run_shortest_trip(
+    env_kwargs: Mapping[str, Any],
+    seed: int,
+    track_path: bool = False,
+) -> tuple[float, dict[str, Any] | None]:
+    """Choose the passenger with the shortest pickup plus service trip."""
+
+    def select_action(env: AdvancedTimeAttackTaxiEnv) -> int:
+        available = np.flatnonzero(np.asarray(env.action_masks(), dtype=bool))
+        if available.size == 0:
+            raise RuntimeError("선택 가능한 승객이 없습니다.")
+        taxi = np.asarray(env.taxi_loc)
+
+        def total_trip(index: int) -> tuple[int, int]:
+            passenger = np.asarray(env.passengers[index])
+            pickup_distance = int(np.abs(taxi - passenger[:2]).sum())
+            service_distance = int(np.abs(passenger[:2] - passenger[2:4]).sum())
+            return pickup_distance + service_distance, index
+
+        return int(min((int(index) for index in available), key=total_trip))
+
+    return _run_direct_policy(env_kwargs, seed, select_action, track_path)
+
+
 class _RLEpisodeRunner:
-    """한 시나리오에서 VecNormalize를 한 번만 로드해 여러 seed를 평가한다."""
+    """Run one RL episode while collecting visualization data."""
 
     def __init__(
         self,
@@ -292,7 +310,7 @@ class _RLEpisodeRunner:
         self,
         seed: int,
         track_path: bool = False,
-    ) -> Tuple[float, Dict[str, Any] | None]:
+    ) -> tuple[float, dict[str, Any] | None]:
         self.vec_env.seed(seed)
         obs = self.vec_env.reset()
         path_data = _new_path_data(self.base_env.taxi_loc, track_path)
@@ -390,16 +408,16 @@ def _run_rl_seeds_batched(
 
 
 def visualize_path(
-    path_data: Dict[str, Any],
-    passengers: List[List[int]],
+    path_data: dict[str, Any],
+    passengers: list[list[int]],
     grid_size: int,
     scenario: str,
     policy: str,
     seed: int,
     output_dir: Path | None = None,
 ) -> None:
-    """경로 데이터를 시각화하여 저장"""
-    fig, ax = plt.subplots(figsize=(12, 12))
+    """Save a schematic of the recorded taxi movement segments."""
+    _, ax = plt.subplots(figsize=(12, 12))
     ax.set_xlim(0, grid_size)
     ax.set_ylim(0, grid_size)
     ax.set_aspect("equal")
@@ -408,21 +426,15 @@ def visualize_path(
     ax.set_ylabel("Y Coordinate", fontsize=12)
     ax.set_title(f"{scenario.upper()} Scenario - {policy.upper()} Policy (seed={seed})", fontsize=14, fontweight="bold")
 
-    # 승객 출발지/목적지 표시 (번호 포함)
     for i, p in enumerate(passengers):
         origin = [p[0], p[1]]
         dest = [p[2], p[3]]
-        # 출발지 (녹색 원)
         ax.scatter(origin[0], origin[1], c="green", s=150, marker="o", alpha=0.7, zorder=5, edgecolors="black", linewidths=1)
-        # 출발지에 승객 번호 표시
         ax.text(origin[0], origin[1], str(i), fontsize=9, ha="center", va="center", 
                 fontweight="bold", color="white", zorder=6)
-        # 목적지 (빨간색 사각형)
         ax.scatter(dest[0], dest[1], c="red", s=150, marker="s", alpha=0.7, zorder=5, edgecolors="black", linewidths=1)
-        # 목적지에 승객 번호 표시
         ax.text(dest[0], dest[1], str(i), fontsize=9, ha="center", va="center", 
                 fontweight="bold", color="white", zorder=6)
-        # 출발지-목적지 연결선 (회색 점선)
         ax.plot([origin[0], dest[0]], [origin[1], dest[1]], "k--", alpha=0.2, linewidth=1, zorder=1)
 
     # 택시 시작 위치 (파란색 다이아몬드)
@@ -436,21 +448,20 @@ def visualize_path(
             edgecolors="black",
             linewidths=2,
             zorder=6,
-            label="Taxi Start",
         )
 
     # 택시 종료 위치 (보라색 다이아몬드)
-    if path_data["taxi_end"]:
+    if path_data["trips"]:
+        taxi_end = path_data["trips"][-1]["destination"]
         ax.scatter(
-            path_data["taxi_end"][0],
-            path_data["taxi_end"][1],
+            taxi_end[0],
+            taxi_end[1],
             c="purple",
             s=200,
             marker="D",
             edgecolors="black",
             linewidths=2,
             zorder=6,
-            label="Taxi End",
         )
 
     # 각 승객별 이동 경로 표시
@@ -459,8 +470,8 @@ def visualize_path(
         color = colors[trip_idx]
         # 빈차 이동 경로 (실선, 두껍게, 강조) - 최적화의 핵심
         ax.plot(
-            [trip["empty_path_start"][0], trip["empty_path_end"][0]],
-            [trip["empty_path_start"][1], trip["empty_path_end"][1]],
+            [trip["taxi_before"][0], trip["origin"][0]],
+            [trip["taxi_before"][1], trip["origin"][1]],
             linestyle="-",
             linewidth=4,
             color=color,
@@ -469,8 +480,8 @@ def visualize_path(
         )
         # 승객 운행 경로 (점선, 얇게) - 어쩔 수 없는 부분
         ax.plot(
-            [trip["service_path_start"][0], trip["service_path_end"][0]],
-            [trip["service_path_start"][1], trip["service_path_end"][1]],
+            [trip["origin"][0], trip["destination"][0]],
+            [trip["origin"][1], trip["destination"][1]],
             linestyle=":",
             linewidth=2,
             color=color,
@@ -478,9 +489,8 @@ def visualize_path(
             zorder=2,
         )
 
-    # 범례
     empty_patch = mpatches.Patch(color="gray", alpha=0.9, label="Empty Taxi (solid, emphasized)")
-    service_patch = mpatches.Patch(color="gray", alpha=0.5, label="With Passenger (dashed)")
+    service_patch = mpatches.Patch(color="gray", alpha=0.5, label="With Passenger (dotted)")
     legend_elements = [
         mpatches.Patch(color="green", alpha=0.7, label="Passenger Origin"),
         mpatches.Patch(color="red", alpha=0.7, label="Passenger Destination"),
@@ -500,35 +510,91 @@ def visualize_path(
     plt.close()
 
 
+def _paired_statistics(costs: np.ndarray) -> dict[str, np.ndarray]:
+    baseline_costs = costs[:, : len(BASELINE_POLICIES), :]
+    rl_costs = costs[:, -1:, :]
+    savings = baseline_costs - rl_costs
+    ddof = 1 if costs.shape[-1] > 1 else 0
+    standard_deviation = savings.std(axis=2, ddof=ddof)
+    return {
+        "paired_mean_savings": savings.mean(axis=2),
+        "paired_std_savings": standard_deviation,
+        "paired_standard_errors": standard_deviation / np.sqrt(costs.shape[-1]),
+        "rl_win_rates": (rl_costs < baseline_costs).mean(axis=2),
+    }
+
+
+def _save_evaluation_artifact(
+    path: Path,
+    checkpoint: str,
+    env_kwargs: Mapping[str, Any],
+    seeds: Sequence[int],
+    costs: np.ndarray,
+    paired: Mapping[str, np.ndarray],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ddof = 1 if costs.shape[-1] > 1 else 0
+    np.savez_compressed(
+        path,
+        checkpoint=np.asarray(checkpoint),
+        env_kwargs_yaml=np.asarray(
+            yaml.safe_dump(dict(env_kwargs), sort_keys=True, allow_unicode=True)
+        ),
+        scenarios=np.asarray(SCENARIOS),
+        policies=np.asarray(POLICIES),
+        baseline_policies=np.asarray(BASELINE_POLICIES),
+        seeds=np.asarray(seeds, dtype=np.int64),
+        costs=costs,
+        mean_costs=costs.mean(axis=2),
+        std_costs=costs.std(axis=2, ddof=ddof),
+        **paired,
+    )
+
+
 def evaluate_scenarios(
     model: MaskablePPO,
     vecnormalize_path: Path | None,
     env_kwargs: Mapping[str, Any],
+    results_path: Path,
+    checkpoint: str,
     num_seeds: int = 100,
     seed_start: int = 10_000,
     visualize: bool = False,
     visualize_seed: int = 10_000,
     output_dir: Path | None = None,
-) -> Dict[str, Dict[str, float]]:
-    evaluation_seeds = _evaluation_seeds(seed_start, num_seeds)
+) -> dict[str, dict[str, float]]:
+    if seed_start < 0:
+        raise ValueError("seed_start는 0 이상이어야 합니다.")
+    if num_seeds < 1:
+        raise ValueError("num_seeds는 1 이상이어야 합니다.")
+    evaluation_seeds = list(range(seed_start, seed_start + num_seeds))
+    scenario_costs: list[np.ndarray] = []
 
-    results: Dict[str, Dict[str, float]] = {}
-    scenario_modes = ["random", "cluster", "complex"]
-
-    for scenario in scenario_modes:
-        scenario_env_kwargs = _scenario_kwargs(env_kwargs, scenario)
-        random_vals = []
-        greedy_vals = []
-        for seed in evaluation_seeds:
-            total_cost, _ = _run_random(scenario_env_kwargs, seed, track_path=False)
-            random_vals.append(total_cost)
-            total_cost, _ = _run_greedy(scenario_env_kwargs, seed, track_path=False)
-            greedy_vals.append(total_cost)
+    for scenario in SCENARIOS:
+        scenario_env_kwargs = {**env_kwargs, "scenario_mode": scenario}
+        random_vals = [
+            _run_random(scenario_env_kwargs, seed, track_path=False)[0]
+            for seed in evaluation_seeds
+        ]
+        greedy_vals = [
+            _run_greedy(scenario_env_kwargs, seed, track_path=False)[0]
+            for seed in evaluation_seeds
+        ]
+        shortest_trip_vals = [
+            _run_shortest_trip(scenario_env_kwargs, seed, track_path=False)[0]
+            for seed in evaluation_seeds
+        ]
         rl_vals = _run_rl_seeds_batched(
             model,
             scenario_env_kwargs,
             vecnormalize_path,
             evaluation_seeds,
+        )
+        scenario_costs.append(
+            np.asarray(
+                [random_vals, greedy_vals, shortest_trip_vals, rl_vals],
+                dtype=np.float64,
+            )
         )
 
         if visualize:
@@ -541,41 +607,33 @@ def evaluate_scenarios(
                 snapshot_env = AdvancedTimeAttackTaxiEnv(**scenario_env_kwargs)
                 try:
                     snapshot_env.reset(seed=visualize_seed)
-                    initial_passengers = [list(passenger) for passenger in snapshot_env.passengers]
+                    initial_passengers = [
+                        list(passenger) for passenger in snapshot_env.passengers
+                    ]
                 finally:
                     snapshot_env.close()
 
-                _, path_data_random = _run_random(
-                    scenario_env_kwargs,
-                    visualize_seed,
-                    track_path=True,
+                visual_policies = (
+                    ("random", _run_random),
+                    ("greedy", _run_greedy),
+                    ("shortest_trip", _run_shortest_trip),
                 )
-                if path_data_random:
-                    visualize_path(
-                        path_data_random,
-                        initial_passengers,
-                        int(scenario_env_kwargs["grid_size"]),
-                        scenario,
-                        "random",
+                for policy_name, run_policy in visual_policies:
+                    _, path_data = run_policy(
+                        scenario_env_kwargs,
                         visualize_seed,
-                        output_dir,
+                        track_path=True,
                     )
-
-                _, path_data_greedy = _run_greedy(
-                    scenario_env_kwargs,
-                    visualize_seed,
-                    track_path=True,
-                )
-                if path_data_greedy:
-                    visualize_path(
-                        path_data_greedy,
-                        initial_passengers,
-                        int(scenario_env_kwargs["grid_size"]),
-                        scenario,
-                        "greedy",
-                        visualize_seed,
-                        output_dir,
-                    )
+                    if path_data:
+                        visualize_path(
+                            path_data,
+                            initial_passengers,
+                            int(scenario_env_kwargs["grid_size"]),
+                            scenario,
+                            policy_name,
+                            visualize_seed,
+                            output_dir,
+                        )
 
                 _, path_data_rl = rl_runner.run(visualize_seed, track_path=True)
                 if path_data_rl:
@@ -591,15 +649,37 @@ def evaluate_scenarios(
             finally:
                 rl_runner.close()
 
-        results[scenario] = {
-            "random_mean": float(np.mean(random_vals)),
-            "random_std": float(np.std(random_vals)),
-            "greedy_mean": float(np.mean(greedy_vals)),
-            "greedy_std": float(np.std(greedy_vals)),
-            "rl_mean": float(np.mean(rl_vals)),
-            "rl_std": float(np.std(rl_vals)),
-        }
+    costs = np.stack(scenario_costs)
+    paired = _paired_statistics(costs)
+    _save_evaluation_artifact(
+        results_path,
+        checkpoint,
+        env_kwargs,
+        evaluation_seeds,
+        costs,
+        paired,
+    )
 
+    results: dict[str, dict[str, float]] = {}
+    ddof = 1 if costs.shape[-1] > 1 else 0
+    for scenario_index, scenario in enumerate(SCENARIOS):
+        scenario_results: dict[str, float] = {}
+        for policy_index, policy in enumerate(POLICIES):
+            values = costs[scenario_index, policy_index]
+            scenario_results[f"{policy}_mean"] = float(values.mean())
+            scenario_results[f"{policy}_std"] = float(values.std(ddof=ddof))
+        for baseline_index, baseline in enumerate(BASELINE_POLICIES):
+            prefix = f"rl_vs_{baseline}"
+            scenario_results[f"{prefix}_mean_savings"] = float(
+                paired["paired_mean_savings"][scenario_index, baseline_index]
+            )
+            scenario_results[f"{prefix}_standard_error"] = float(
+                paired["paired_standard_errors"][scenario_index, baseline_index]
+            )
+            scenario_results[f"{prefix}_win_rate"] = float(
+                paired["rl_win_rates"][scenario_index, baseline_index]
+            )
+        results[scenario] = scenario_results
     return results
 
 
@@ -625,9 +705,15 @@ def main() -> None:
     parser.add_argument("--logs-dir", type=str, default="logs", help="로그 디렉터리 (기본: logs)")
     parser.add_argument("--exp-id", type=int, required=True, help="평가할 학습 실험 ID")
     parser.add_argument(
+        "--checkpoint",
+        choices=("final", "best"),
+        required=True,
+        help="평가할 checkpoint와 대응 VecNormalize 통계 선택",
+    )
+    parser.add_argument(
         "--center-start",
         action="store_true",
-        help="학습 출발 설정 대신 중앙 출발 OOD 평가를 수행",
+        help="random/cluster를 중앙 출발로 바꾼 OOD 평가를 수행",
     )
     parser.add_argument("--num-seeds", type=int, default=100, help="시나리오별 평가 seed 수 (기본: 100)")
     parser.add_argument("--seed-start", type=int, default=10_000, help="평가 seed 시작값 (기본: 10000)")
@@ -635,18 +721,29 @@ def main() -> None:
     parser.add_argument("--visualize", action="store_true", help="시각화 생성 여부")
     parser.add_argument("--visualize-seed", type=int, default=10_000, help="시각화에 사용할 시드 (기본: 10000)")
     parser.add_argument("--output-dir", type=str, default="visualizations", help="시각화 저장 디렉터리 (기본: visualizations)")
+    parser.add_argument(
+        "--results-file",
+        type=Path,
+        help="per-seed 비용과 paired 통계를 저장할 NPZ 경로",
+    )
     args = parser.parse_args()
     if args.num_threads < 1:
         parser.error("--num-threads는 1 이상이어야 합니다.")
     torch.set_num_threads(args.num_threads)
 
     logs_dir = (ROOT / args.logs_dir).resolve()
-    artifacts = resolve_run_artifacts(logs_dir, ALGO, ENV_ID, args.exp_id)
+    artifacts = resolve_run_artifacts(
+        logs_dir,
+        ALGO,
+        ENV_ID,
+        args.exp_id,
+        args.checkpoint,
+    )
     env_kwargs = load_evaluation_env_kwargs(artifacts)
     evaluation_mode = "저장된 평가 조건"
     if args.center_start:
         env_kwargs["start_at_center"] = True
-        evaluation_mode = "중앙 출발 OOD"
+        evaluation_mode = "random/cluster 중앙 출발 OOD"
 
     print(f"[INFO] 모델 로드: {artifacts.model}")
     if artifacts.vecnormalize:
@@ -654,21 +751,44 @@ def main() -> None:
     print(f"[INFO] 평가 모드: {evaluation_mode}")
     print(f"[INFO] 저장된 평가 환경 설정 복원: {env_kwargs}")
 
-    model = MaskablePPO.load(str(artifacts.model))
+    model = MaskablePPO.load(str(artifacts.model), device="cpu")
     _validate_model_spaces(model, env_kwargs)
 
-    output_dir = (ROOT / args.output_dir).resolve() if args.visualize else None
+    evaluation_tag = "center" if args.center_start else "saved"
+    output_dir = (
+        (ROOT / args.output_dir).resolve()
+        / f"{ENV_ID}_{args.exp_id}"
+        / artifacts.checkpoint
+        / evaluation_tag
+        if args.visualize
+        else None
+    )
+    results_path = (
+        args.results_file.expanduser().resolve()
+        if args.results_file is not None
+        else artifacts.run_dir
+        / (
+            f"evaluation_{artifacts.checkpoint}_"
+            f"{evaluation_tag}_"
+            f"{args.seed_start}_{args.num_seeds}.npz"
+        )
+    )
+    if results_path.suffix != ".npz":
+        results_path = Path(f"{results_path}.npz")
 
     results = evaluate_scenarios(
         model=model,
         vecnormalize_path=artifacts.vecnormalize,
         env_kwargs=env_kwargs,
+        results_path=results_path,
+        checkpoint=artifacts.checkpoint,
         num_seeds=args.num_seeds,
         seed_start=args.seed_start,
         visualize=args.visualize,
         visualize_seed=args.visualize_seed,
         output_dir=output_dir,
     )
+    print(f"[INFO] 평가 산출물 저장: {results_path}")
 
     print(
         "\n=== 성과 지표 "
@@ -676,19 +796,37 @@ def main() -> None:
         f"seed={args.seed_start}~{args.seed_start + args.num_seeds - 1}, "
         f"{evaluation_mode}) ===\n"
     )
-    header = f"{'Scenario':<10} | {'Policy':<8} | {'Mean':>12} | {'Std':>12}"
+    header = f"{'Scenario':<10} | {'Policy':<13} | {'Mean':>12} | {'Std':>12}"
     sep = "-" * len(header)
     print(header)
     print(sep)
     for scenario, stats in results.items():
         rows = [
-            ("random", stats["random_mean"], stats["random_std"]),
-            ("greedy", stats["greedy_mean"], stats["greedy_std"]),
-            ("RL", stats["rl_mean"], stats["rl_std"]),
+            (policy, stats[f"{policy}_mean"], stats[f"{policy}_std"])
+            for policy in POLICIES
         ]
         for policy, mean, std in rows:
-            print(f"{scenario:<10} | {policy:<8} | {mean:12.2f} | {std:12.2f}")
+            print(f"{scenario:<10} | {policy:<13} | {mean:12.2f} | {std:12.2f}")
         print(sep)
+
+    print("\n=== Paired RL savings (baseline - RL; 양수면 RL 우수) ===\n")
+    paired_header = (
+        f"{'Scenario':<10} | {'Baseline':<13} | {'Mean saving':>12} | "
+        f"{'SE':>10} | {'Win rate':>10}"
+    )
+    paired_sep = "-" * len(paired_header)
+    print(paired_header)
+    print(paired_sep)
+    for scenario, stats in results.items():
+        for baseline in BASELINE_POLICIES:
+            prefix = f"rl_vs_{baseline}"
+            print(
+                f"{scenario:<10} | {baseline:<13} | "
+                f"{stats[f'{prefix}_mean_savings']:12.2f} | "
+                f"{stats[f'{prefix}_standard_error']:10.2f} | "
+                f"{stats[f'{prefix}_win_rate']:9.1%}"
+            )
+        print(paired_sep)
 
 
 if __name__ == "__main__":

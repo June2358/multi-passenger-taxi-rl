@@ -1,7 +1,7 @@
 """
 RL-Zoo 기반 훈련 스크립트 (Taxi-v4 전용)
 
-- 커스텀 AdvancedTaxi-v1/MaskablePPO는 별도 스크립트 사용
+- 커스텀 AdvancedTaxi-v2/MaskablePPO는 별도 스크립트 사용
 - 심플한 인자 파싱 + YAML 자동 매핑 후 RL-Zoo에 위임
 """
 
@@ -9,13 +9,7 @@ import argparse
 import sys
 from pathlib import Path
 
-# 프로젝트 루트를 Python 경로에 추가
 ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-# 환경 등록 (Taxi wrappers/AdvancedTaxi-v1)
-import envs  # noqa: F401
 
 
 def parse_wrapper_args(argv: list[str]) -> tuple[argparse.Namespace, argparse.Namespace, list[str]]:
@@ -46,24 +40,35 @@ def parse_wrapper_args(argv: list[str]) -> tuple[argparse.Namespace, argparse.Na
     return local_args, inspected_args, rl_zoo_args
 
 
+def parse_qlearning_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the complete supported Q-Learning CLI without ignoring options."""
+    parser = argparse.ArgumentParser(
+        prog="train_rlzoo.py",
+        description="Tabular Q-Learning (Taxi-v4 only)",
+        allow_abbrev=False,
+    )
+    parser.add_argument("--algo", required=True, choices=["qlearning"])
+    parser.add_argument("--env", default="Taxi-v4", choices=["Taxi-v4"])
+    parser.add_argument("-conf", "--conf-file")
+    parser.add_argument("--n-timesteps", "-n", type=int, default=500_000)
+    parser.add_argument("--verbose", type=int, choices=[0, 1, 2], default=1)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--log-folder", "-f")
+    args = parser.parse_args(argv)
+    if args.n_timesteps < 1:
+        parser.error("--n-timesteps must be at least 1")
+    if args.seed is not None and args.seed < 0:
+        parser.error("--seed must be non-negative")
+    return args
+
+
 def resolve_config_file(env_id: str, algo: str, param_mode: str, hyperparams_dir: Path) -> Path:
     """환경/알고리즘별 하이퍼파라미터 파일 경로 반환 (공용)."""
-    env_folder_map = {"Taxi-v4": "taxi_v4"}
-    try:
-        env_folder = env_folder_map[env_id]
-    except KeyError as exc:
-        raise ValueError(f"지원하지 않는 환경입니다: {env_id}") from exc
-    env_dir = hyperparams_dir / env_folder
-    base_name = "qlearning" if algo == "qlearning" else algo
-    filename = f"{base_name}_base.yml" if param_mode == "base" else f"{base_name}.yml"
+    if env_id != "Taxi-v4":
+        raise ValueError(f"지원하지 않는 환경입니다: {env_id}")
+    env_dir = hyperparams_dir / "taxi_v4"
+    filename = f"{algo}_base.yml" if param_mode == "base" else f"{algo}.yml"
     return env_dir / filename
-
-
-def require_config_file(path: Path | None) -> Path | None:
-    """Reject an explicitly resolved config path instead of silently falling back."""
-    if path is not None and not path.is_file():
-        raise FileNotFoundError(f"하이퍼파라미터 파일을 찾을 수 없습니다: {path}")
-    return path
 
 
 def resolve_qlearning_log_dir(log_folder: str | None) -> Path | None:
@@ -73,13 +78,11 @@ def resolve_qlearning_log_dir(log_folder: str | None) -> Path | None:
 
 
 if __name__ == "__main__":
-    from rl_zoo3.train import train
-
     HYPERPARAMS_DIR = ROOT / "hyperparameters"
 
-    original_args = sys.argv[1:]
-    local_args, known_args, forwarded_args = parse_wrapper_args(original_args)
+    local_args, known_args, forwarded_args = parse_wrapper_args(sys.argv[1:])
     is_qlearning = known_args.algo == "qlearning"
+    qlearning_args = parse_qlearning_args(forwarded_args) if is_qlearning else None
     # 주입이 필요한 추가 인자만 모아 중복 없이 전달
     injected_args = []
 
@@ -102,13 +105,6 @@ if __name__ == "__main__":
     if known_args.env is not None and known_args.env != "Taxi-v4":
         print("[ERROR] 이 스크립트는 Taxi-v4 전용입니다.")
         sys.exit(1)
-    if is_qlearning and known_args.optimize_hyperparameters:
-        print("[ERROR] Tabular Q-Learning은 이 스크립트에서 Optuna 최적화를 지원하지 않습니다.")
-        sys.exit(1)
-    if is_qlearning and known_args.tensorboard_log is not None:
-        print("[ERROR] Q-Learning 로그 위치는 --log-folder로 지정하세요.")
-        sys.exit(1)
-
     # Optimize 모드 기본 n_jobs 추천 (이미 지정된 경우 중복 추가 방지)
     if (
         known_args.optimize_hyperparameters
@@ -127,14 +123,16 @@ if __name__ == "__main__":
 
     # 하이퍼파라미터 파일 자동 선택
     auto_conf = None
-    config_env = known_args.env
-    if config_env is None and known_args.algo == "qlearning":
-        config_env = "Taxi-v4"
-    if known_args.conf_file is None and known_args.algo and config_env:
+    selected_algo = qlearning_args.algo if qlearning_args else known_args.algo
+    config_env = qlearning_args.env if qlearning_args else known_args.env
+    selected_conf_file = (
+        qlearning_args.conf_file if qlearning_args else known_args.conf_file
+    )
+    if selected_conf_file is None and selected_algo and config_env:
         try:
             auto_conf = resolve_config_file(
                 config_env,
-                known_args.algo,
+                selected_algo,
                 local_args.param_mode,
                 HYPERPARAMS_DIR,
             )
@@ -142,7 +140,8 @@ if __name__ == "__main__":
             print(f"[ERROR] {exc}")
             sys.exit(1)
         if auto_conf.exists():
-            injected_args.extend(["--conf-file", str(auto_conf)])
+            if not is_qlearning:
+                injected_args.extend(["--conf-file", str(auto_conf)])
             print(f"[INFO] 하이퍼파라미터 파일: {auto_conf.relative_to(ROOT)} (mode: {local_args.param_mode})")
         else:
             print(f"[ERROR] 하이퍼파라미터 파일을 찾을 수 없습니다: {auto_conf}")
@@ -151,30 +150,27 @@ if __name__ == "__main__":
             sys.exit(1)
 
     # Q-Learning 분기
-    if known_args.algo == "qlearning":
+    if qlearning_args is not None:
         from qlearning_train import train_qlearning
 
-        conf_file = Path(known_args.conf_file) if known_args.conf_file else auto_conf
-        try:
-            conf_file = require_config_file(conf_file)
-        except FileNotFoundError as exc:
-            print(f"[ERROR] {exc}")
-            sys.exit(1)
-        n_timesteps = (
-            known_args.n_timesteps
-            if known_args.n_timesteps is not None
-            else 500_000
+        conf_file = (
+            Path(qlearning_args.conf_file) if qlearning_args.conf_file else auto_conf
         )
+        if conf_file is None or not conf_file.is_file():
+            print(f"[ERROR] 하이퍼파라미터 파일을 찾을 수 없습니다: {conf_file}")
+            sys.exit(1)
         train_qlearning(
-            env_id=known_args.env or "Taxi-v4",
+            env_id=qlearning_args.env,
             conf_file=conf_file,
-            n_timesteps=n_timesteps,
-            seed=known_args.seed,
+            n_timesteps=qlearning_args.n_timesteps,
+            seed=qlearning_args.seed,
             exp_id=None,
-            log_dir=resolve_qlearning_log_dir(known_args.log_folder),
-            verbose=known_args.verbose,
+            log_dir=resolve_qlearning_log_dir(qlearning_args.log_folder),
+            verbose=qlearning_args.verbose,
         )
     else:
         # RL-Zoo로 전달: 로컬 전용 옵션을 제거하고 필요한 기본값만 추가
-        sys.argv = [sys.argv[0]] + forwarded_args + injected_args
+        from rl_zoo3.train import train
+
+        sys.argv = [sys.argv[0], *forwarded_args, *injected_args]
         train()

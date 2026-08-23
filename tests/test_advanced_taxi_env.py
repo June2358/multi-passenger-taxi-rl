@@ -8,7 +8,6 @@ import gymnasium as gym
 import numpy as np
 from gymnasium.utils.env_checker import check_env
 
-import envs  # noqa: F401
 from envs.envs import AdvancedTimeAttackTaxiEnv
 from envs.utils import compute_trip_time
 
@@ -28,14 +27,14 @@ def set_passenger_state(
 
 class AdvancedTaxiConstructionTests(unittest.TestCase):
     def test_gymnasium_environment_contract(self):
-        env = gym.make("AdvancedTaxi-v1")
+        env = gym.make("AdvancedTaxi-v2")
         try:
             check_env(env.unwrapped)
         finally:
             env.close()
 
     def test_registered_environment_has_no_conflicting_time_limit(self):
-        env = gym.make("AdvancedTaxi-v1", num_passengers=1_001)
+        env = gym.make("AdvancedTaxi-v2", num_passengers=1_001)
         try:
             self.assertIsNone(env.spec.max_episode_steps)
         finally:
@@ -52,8 +51,6 @@ class AdvancedTaxiConstructionTests(unittest.TestCase):
             ({"scenario_mix": [0.5, 0.5]}, ValueError),
             ({"scenario_mix": [0.5, np.nan, 0.5]}, ValueError),
             ({"scenario_mix": [0.0, 0.0, 0.0]}, ValueError),
-            ({"mix_noise_std": -0.1}, ValueError),
-            ({"mix_epsilon": 0.0}, ValueError),
         )
 
         for kwargs, error_type in cases:
@@ -69,12 +66,10 @@ class AdvancedTaxiRandomnessTests(unittest.TestCase):
                 first = AdvancedTimeAttackTaxiEnv(
                     num_passengers=20,
                     scenario_mode=scenario_mode,
-                    mix_noise_std=0.2,
                 )
                 second = AdvancedTimeAttackTaxiEnv(
                     num_passengers=20,
                     scenario_mode=scenario_mode,
-                    mix_noise_std=0.2,
                 )
 
                 first_obs, _ = first.reset(seed=2026)
@@ -101,9 +96,9 @@ class AdvancedTaxiRandomnessTests(unittest.TestCase):
         )
 
     def test_environment_rng_is_independent_of_other_rngs(self):
-        first = AdvancedTimeAttackTaxiEnv(scenario_mode="mixed", mix_noise_std=0.3)
-        second = AdvancedTimeAttackTaxiEnv(scenario_mode="mixed", mix_noise_std=0.3)
-        intruder = AdvancedTimeAttackTaxiEnv(scenario_mode="mixed", mix_noise_std=0.3)
+        first = AdvancedTimeAttackTaxiEnv(scenario_mode="mixed")
+        second = AdvancedTimeAttackTaxiEnv(scenario_mode="mixed")
+        intruder = AdvancedTimeAttackTaxiEnv(scenario_mode="mixed")
 
         first.reset(seed=91)
         second.reset(seed=91)
@@ -121,8 +116,8 @@ class AdvancedTaxiRandomnessTests(unittest.TestCase):
         np.testing.assert_array_equal(first_passengers, passenger_snapshot(second))
         np.testing.assert_array_equal(first_obs, second_obs)
 
-    def test_center_start_changes_only_the_taxi_start_for_a_seed(self):
-        for scenario_mode in ("random", "cluster", "complex"):
+    def test_center_start_changes_only_the_taxi_start_for_random_and_cluster(self):
+        for scenario_mode in ("random", "cluster"):
             with self.subTest(scenario_mode=scenario_mode):
                 random_start = AdvancedTimeAttackTaxiEnv(
                     scenario_mode=scenario_mode,
@@ -144,6 +139,44 @@ class AdvancedTaxiRandomnessTests(unittest.TestCase):
                     center_start.taxi_loc,
                     [center_start.grid_size // 2] * 2,
                 )
+                self.assertFalse(
+                    np.array_equal(random_start.taxi_loc, center_start.taxi_loc)
+                )
+
+    def test_complex_always_starts_at_center(self):
+        implicit_center = AdvancedTimeAttackTaxiEnv(
+            grid_size=100,
+            scenario_mode="complex",
+            start_at_center=False,
+        )
+        explicit_center = AdvancedTimeAttackTaxiEnv(
+            grid_size=100,
+            scenario_mode="complex",
+            start_at_center=True,
+        )
+
+        implicit_center.reset(seed=17)
+        explicit_center.reset(seed=17)
+
+        np.testing.assert_array_equal(implicit_center.taxi_loc, [50, 50])
+        np.testing.assert_array_equal(explicit_center.taxi_loc, [50, 50])
+        np.testing.assert_array_equal(
+            passenger_snapshot(implicit_center),
+            passenger_snapshot(explicit_center),
+        )
+
+    def test_zero_scenario_weights_exclude_scenarios_exactly(self):
+        env = AdvancedTimeAttackTaxiEnv(
+            grid_size=100,
+            scenario_mode="mixed",
+            start_at_center=False,
+            scenario_mix=[0.0, 0.0, 7.0],
+        )
+
+        for seed in range(20):
+            _, info = env.reset(seed=seed)
+            self.assertEqual(info["scenario"], "complex")
+            np.testing.assert_array_equal(env.taxi_loc, [50, 50])
 
     def test_complex_passenger_types_are_not_fixed_to_action_slots(self):
         trap_slot_sets = set()
@@ -228,7 +261,7 @@ class AdvancedTaxiStepTests(unittest.TestCase):
             [4, 4, 4, 5, 0],
         ])
 
-        _, reward, terminated, truncated, info = self.env.step(0)
+        observation, reward, terminated, truncated, info = self.env.step(0)
 
         self.assertAlmostEqual(reward, -0.08)
         self.assertFalse(terminated)
@@ -257,6 +290,13 @@ class AdvancedTaxiStepTests(unittest.TestCase):
         np.testing.assert_array_equal(info["passenger_destination"], [3, 1])
         self.assertAlmostEqual(reward, -info["completion_cost"] / 100.0)
         np.testing.assert_array_equal(self.env.passengers[0][:4], [1, 1, 3, 1])
+        np.testing.assert_allclose(
+            observation.reshape(2, 7),
+            [
+                [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                [0.01, 0.03, 0.0, 0.01, 0.0, 0.04, 0.01],
+            ],
+        )
 
         info["taxi_after"][0] = 99
         info["passenger_destination"][0] = 99

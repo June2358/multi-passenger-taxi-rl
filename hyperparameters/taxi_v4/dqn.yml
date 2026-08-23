@@ -1,41 +1,19 @@
-# DQN tuned hyperparameters for Taxi-v4 (decoded observation)
-# RL-Zoo format: environment ID as key
-# Optimized parameters from Optuna tuning (may need retuning for decoded obs)
+# Validated raw-discrete DQN configuration for Taxi-v4.
 
 Taxi-v4:
-  # Policy type (required)
   policy: MlpPolicy
-  
-  # Basic hyperparameters (Optuna tuned, rounded values)
-  learning_rate: 0.002
-  exploration_fraction: 0.2
-  exploration_final_eps: 0.1
-  buffer_size: 600000
-  batch_size: 1024
-  learning_starts: 10000
-  target_update_interval: 12500
-  gamma: 0.991
-  train_freq: 2
-  
-  # Policy network architecture
-  # Note: Input dimension changed from 500 (one-hot) to 11 (decoded)
-  # Hidden layers are essential for spatial reasoning (wall avoidance, path planning)
-  policy_kwargs: "dict(net_arch=[512, 512])"
-  
-  # Environment wrapper: decode Taxi-v4 to 11-dim meaningful vector
-  # Output: [taxi_row, taxi_col, passenger_location_onehot(5), destination_onehot(4)]
-  env_wrapper:
-    - envs.TaxiDecodedObservationWrapper
-  
-  # n_timesteps is required by RL-Zoo (will be overridden by --n-timesteps)
-  n_timesteps: !!float 5e5
-  
-  # Parallel environments (Off-Policy: single environment is sufficient)
+  learning_rate: 0.001
+  exploration_fraction: 0.5
+  exploration_initial_eps: 1.0
+  exploration_final_eps: 0.05
+  buffer_size: 100000
+  batch_size: 64
+  learning_starts: 5000
+  target_update_interval: 1000
+  gamma: 0.99
+  train_freq: 4
+  gradient_steps: 1
+  n_steps: 3
+  policy_kwargs: "dict(net_arch=[])"
+  n_timesteps: 500000
   n_envs: 1
-  
-  # Normalization settings
-  # TaxiDecodedObservationWrapper returns raw values (taxi pos: 0~4, one-hot: 0/1)
-  # VecNormalize will normalize observations during training
-  normalize: "{'norm_obs': True, 'norm_reward': False}"
-  
-  # device: auto
