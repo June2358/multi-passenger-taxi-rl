@@ -1,18 +1,20 @@
-"""Taxi-v3 관찰 래퍼."""
+"""Taxi-v4 관찰 래퍼."""
 
 import numpy as np
 from gymnasium import ObservationWrapper
 from gymnasium.spaces import Box
+from gymnasium.utils import RecordConstructorArgs
 
 
-class TaxiOneHotObservationWrapper(ObservationWrapper):
+class TaxiOneHotObservationWrapper(ObservationWrapper, RecordConstructorArgs):
     """
-    Taxi-v3의 정수 상태(0~499)를 길이 500의 원핫 벡터(Box)로 변환.
+    Taxi-v4의 정수 상태(0~499)를 길이 500의 원핫 벡터(Box)로 변환.
     - 출력: Box(low=0, high=1, shape=(500,), dtype=float32)
     """
 
     def __init__(self, env):
-        super().__init__(env)
+        RecordConstructorArgs.__init__(self)
+        ObservationWrapper.__init__(self, env)
         self.n = env.observation_space.n  # 500
         self.observation_space = Box(
             low=np.zeros(self.n, dtype=np.float32),
@@ -26,17 +28,17 @@ class TaxiOneHotObservationWrapper(ObservationWrapper):
         return onehot
 
 
-class TaxiDecodedObservationWrapper(ObservationWrapper):
+class TaxiDecodedObservationWrapper(ObservationWrapper, RecordConstructorArgs):
     """
-    Taxi-v3의 정수 상태를 decode()하여 11차원의 의미 있는 벡터로 변환하는 Wrapper.
+    Taxi-v4의 정수 상태를 decode()하여 11차원의 의미 있는 벡터로 변환하는 Wrapper.
     
-    Taxi-v3의 원형(Discrete(500))을 받아서 decode()만 수행 (정규화는 RL-Zoo의 VecNormalize에 위임):
+    Taxi-v4의 원형(Discrete(500))을 받아서 decode()만 수행 (정규화는 RL-Zoo의 VecNormalize에 위임):
     - 택시 위치: 원본 좌표 그대로 사용 (0~4 범위)
     - 승객 위치: 원핫 벡터 (범주형 데이터)
     - 목적지: 원핫 벡터 (범주형 데이터)
     
     입력: Discrete(500) → decode() → 11차원 벡터
-    - 입력: 정수 상태 (Discrete(500), Taxi-v3 원형)
+    - 입력: 정수 상태 (Discrete(500), Taxi-v4 원형)
     - 출력: Box(low=[0,0,0,0,0,0,0,0,0,0,0], high=[4,4,1,1,1,1,1,1,1,1,1], shape=(11,), dtype=float32)
     
     출력 벡터 구성:
@@ -50,8 +52,9 @@ class TaxiDecodedObservationWrapper(ObservationWrapper):
     """
 
     def __init__(self, env):
-        super().__init__(env)
-        # Taxi-v3의 원형(Discrete(500))을 입력으로 받음
+        RecordConstructorArgs.__init__(self)
+        ObservationWrapper.__init__(self, env)
+        # Taxi-v4의 원형(Discrete(500))을 입력으로 받음
         # 출력은 11차원 벡터 (택시 위치 2 + 승객 위치 원핫 5 + 목적지 원핫 4)
         # low/high: 택시 위치는 0~4, 원핫 벡터는 0~1
         self.observation_space = Box(
@@ -63,10 +66,10 @@ class TaxiDecodedObservationWrapper(ObservationWrapper):
 
     def observation(self, obs):
         """
-        Taxi-v3의 정수 상태를 11차원 벡터로 디코딩 (정규화 없이 원본 값 반환)
+        Taxi-v4의 정수 상태를 11차원 벡터로 디코딩 (정규화 없이 원본 값 반환)
         
         Args:
-            obs: 정수 상태 (int, np.integer, Taxi-v3의 원형)
+            obs: 정수 상태 (int, np.integer, Taxi-v4의 원형)
         
         Returns:
             np.array: 11차원 벡터 [taxi_row, taxi_col,
@@ -77,7 +80,7 @@ class TaxiDecodedObservationWrapper(ObservationWrapper):
         state_int = int(obs)
         
         # 환경의 내장 decode 함수 사용 (원형 그대로 활용)
-        # unwrapped를 통해 실제 Taxi-v3 환경에 접근
+        # unwrapped를 통해 실제 Taxi-v4 환경에 접근
         taxi_row, taxi_col, passenger_location, destination = self.env.unwrapped.decode(
             state_int
         )

@@ -1,5 +1,5 @@
 """
-RL-Zoo 기반 훈련 스크립트 (Taxi-v3 전용)
+RL-Zoo 기반 훈련 스크립트 (Taxi-v4 전용)
 
 - 커스텀 AdvancedTaxi-v1/MaskablePPO는 별도 스크립트 사용
 - 심플한 인자 파싱 + YAML 자동 매핑 후 RL-Zoo에 위임
@@ -39,6 +39,7 @@ def parse_wrapper_args(argv: list[str]) -> tuple[argparse.Namespace, argparse.Na
     inspection_parser.add_argument("--n-jobs", type=int)
     inspection_parser.add_argument("--seed", type=int)
     inspection_parser.add_argument("--device")
+    inspection_parser.add_argument("--num-threads", type=int)
     inspection_parser.add_argument("--tensorboard-log", "-tb")
     inspection_parser.add_argument("--log-folder", "-f")
     inspected_args, _ = inspection_parser.parse_known_args(rl_zoo_args)
@@ -47,7 +48,7 @@ def parse_wrapper_args(argv: list[str]) -> tuple[argparse.Namespace, argparse.Na
 
 def resolve_config_file(env_id: str, algo: str, param_mode: str, hyperparams_dir: Path) -> Path:
     """환경/알고리즘별 하이퍼파라미터 파일 경로 반환 (공용)."""
-    env_folder_map = {"Taxi-v3": "taxi_v3"}
+    env_folder_map = {"Taxi-v4": "taxi_v4"}
     try:
         env_folder = env_folder_map[env_id]
     except KeyError as exc:
@@ -82,9 +83,11 @@ if __name__ == "__main__":
     # 주입이 필요한 추가 인자만 모아 중복 없이 전달
     injected_args = []
 
-    # Taxi-v3는 CPU가 기본적으로 효율적
+    # Taxi-v4는 CPU가 기본적으로 효율적
     if not is_qlearning and known_args.device is None:
         injected_args.extend(["--device", "cpu"])
+    if not is_qlearning and known_args.num_threads is None:
+        injected_args.extend(["--num-threads", "1"])
 
     # TensorBoard 로그 경로를 명시적으로 주입해 RL-Zoo가 항상 TF 로그를 남기도록 함
     if not is_qlearning and known_args.tensorboard_log is None:
@@ -96,8 +99,8 @@ if __name__ == "__main__":
     if known_args.algo == "maskableppo":
         print("[ERROR] maskableppo는 전용 스크립트 사용: train_advanced_taxi_maskableppo.py")
         sys.exit(1)
-    if known_args.env is not None and known_args.env != "Taxi-v3":
-        print("[ERROR] 이 스크립트는 Taxi-v3 전용입니다.")
+    if known_args.env is not None and known_args.env != "Taxi-v4":
+        print("[ERROR] 이 스크립트는 Taxi-v4 전용입니다.")
         sys.exit(1)
     if is_qlearning and known_args.optimize_hyperparameters:
         print("[ERROR] Tabular Q-Learning은 이 스크립트에서 Optuna 최적화를 지원하지 않습니다.")
@@ -126,7 +129,7 @@ if __name__ == "__main__":
     auto_conf = None
     config_env = known_args.env
     if config_env is None and known_args.algo == "qlearning":
-        config_env = "Taxi-v3"
+        config_env = "Taxi-v4"
     if known_args.conf_file is None and known_args.algo and config_env:
         try:
             auto_conf = resolve_config_file(
@@ -143,8 +146,8 @@ if __name__ == "__main__":
             print(f"[INFO] 하이퍼파라미터 파일: {auto_conf.relative_to(ROOT)} (mode: {local_args.param_mode})")
         else:
             print(f"[ERROR] 하이퍼파라미터 파일을 찾을 수 없습니다: {auto_conf}")
-            print("지원 환경: Taxi-v3")
-            print("입력 예: --algo ppo --env Taxi-v3")
+            print("지원 환경: Taxi-v4")
+            print("입력 예: --algo dqn --env Taxi-v4")
             sys.exit(1)
 
     # Q-Learning 분기
@@ -163,7 +166,7 @@ if __name__ == "__main__":
             else 500_000
         )
         train_qlearning(
-            env_id=known_args.env or "Taxi-v3",
+            env_id=known_args.env or "Taxi-v4",
             conf_file=conf_file,
             n_timesteps=n_timesteps,
             seed=known_args.seed,

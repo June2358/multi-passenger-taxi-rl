@@ -1,8 +1,8 @@
 # Taxi RL 실험 프로젝트
 
-Gymnasium 커스텀 환경 `AdvancedTaxi-v1`과 표준 `Taxi-v3`에서 MaskablePPO, DQN, Tabular Q-Learning을 비교하는 프로젝트입니다.
+Gymnasium 커스텀 환경 `AdvancedTaxi-v1`과 표준 `Taxi-v4`에서 MaskablePPO, DQN, Tabular Q-Learning을 비교하는 프로젝트입니다.
 
-> `AdvancedTaxi-v1`은 환경 난수·승객 슬롯 누출·평가 설정 문제를 수정한 새 계약입니다. 기존 `AdvancedTaxi-v0` 모델과 로그는 새 환경의 성능 근거로 재사용할 수 없으며, 반드시 다시 학습해야 합니다.
+> `AdvancedTaxi-v1`은 환경 난수·승객 슬롯 누출·평가 설정 문제를 수정한 새 계약입니다. 기존 `AdvancedTaxi-v0` 모델과 로그는 새 환경의 성능 근거로 재사용할 수 없으며, 반드시 다시 학습해야 합니다. 또한 현재 의존성보다 오래된 환경에서 저장한 모델과 `VecNormalize` 통계의 호환성은 지원하지 않습니다.
 
 ## 목적함수
 
@@ -34,24 +34,20 @@ reward = -step_cost / 100
 ## 설치와 테스트
 
 ```bash
-pixi install
+pixi install --locked
 pixi run test
 ```
 
 `test` task는 전체 `unittest` 회귀 테스트를 실행합니다.
 
+잠금 환경은 Python 3.13, NumPy 2.5, Gymnasium 1.3, PyTorch 2.13, Stable-Baselines3·SB3-Contrib 2.9 계열을 사용합니다. 최신 Gymnasium 계약에 따라 표준 Taxi 기준선은 `Taxi-v4`입니다.
+
 ## AdvancedTaxi-v1 학습
 
-누출이 제거된 환경에서는 과거 tuned 설정을 폐기했습니다. 기본 모드는 현재의 보수적인 baseline 설정인 `hyperparameters/advanced_taxi/maskableppo_base.yml`입니다.
+누출이 제거된 환경에서는 과거 tuned 설정을 폐기했습니다. 기본값은 보수적인 baseline 설정인 `hyperparameters/advanced_taxi/maskableppo_base.yml`입니다.
 
 ```bash
 pixi run python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 --seed 42 -P
-```
-
-Optuna 탐색:
-
-```bash
-pixi run python train_advanced_taxi_maskableppo.py -optimize --n-trials 100 --n-timesteps 200000 --study-name adv_taxi_v1_maskableppo --storage sqlite:///logs/adv_taxi_v1_optuna.db --n-jobs 1
 ```
 
 환경 오버라이드:
@@ -67,25 +63,28 @@ pixi run python train_advanced_taxi_maskableppo.py --env-kwargs num_passengers:3
 ```
 
 - 기본 seed는 `42`입니다.
-- `--param-mode base`가 기본입니다.
-- 누출 환경에서 얻은 과거 tuned 모드는 제거했으며 현재는 `base`만 허용합니다.
-- 실행 경로와 평가 대상을 모호하게 만드는 `--uuid` 및 학습용 `--exp-id`는 지원하지 않습니다.
-- 사용자 `--conf-file`을 지정하면 자동 설정 선택 대신 그 파일만 사용합니다.
+- 작은 MLP 환경에 적합하도록 기본 device는 CPU입니다.
+- PyTorch CPU thread는 기본적으로 `1`개를 사용하며 `--num-threads`로 변경할 수 있습니다.
+- 학습기는 SB3-Contrib의 공개 `MaskablePPO`와 `MaskableEvalCallback` API를 직접 사용합니다.
+- 환경과 알고리즘이 고정되어 있으므로 `--algo`, `--env`, `--param-mode`는 받지 않습니다.
+- 성능 탐색이 과제 목표가 아니므로 AdvancedTaxi용 Optuna 경로는 제공하지 않습니다.
+- 사용자 `--conf-file`을 지정하면 그 안전한 YAML 설정만 사용합니다.
+- `--eval-freq 0`이면 중간 평가와 `best_model.zip` 생성을 생략합니다.
 
-## Taxi-v3 기준선
+## Taxi-v4 기준선
 
 DQN baseline:
 
 ```bash
-pixi run python train_rlzoo.py --algo dqn --env Taxi-v3 --param-mode base --n-timesteps 500000 --seed 42 -P
+pixi run python train_rlzoo.py --algo dqn --env Taxi-v4 --param-mode base --n-timesteps 500000 --seed 42 -P
 ```
 
-`dqn_base.yml`은 현재 고정된 SB3 2.7.1의 기본 `learning_starts=100`, `[64, 64]` 네트워크를 사용합니다.
+`dqn_base.yml`은 현재 고정된 SB3 2.9.0의 기본 `learning_starts=100`, `[64, 64]` 네트워크를 사용합니다.
 
 Tabular Q-Learning baseline:
 
 ```bash
-pixi run python train_rlzoo.py --algo qlearning --env Taxi-v3 --param-mode base --n-timesteps 500000 --seed 42
+pixi run python train_rlzoo.py --algo qlearning --env Taxi-v4 --param-mode base --n-timesteps 500000 --seed 42
 ```
 
 직접 실행하면 `qlearning.yml`을 사용합니다.
@@ -113,6 +112,7 @@ pixi run python evaluate_model.py --exp-id 1
 - Random, nearest-pickup Greedy, RL에 동일한 seed의 동일 승객 인스턴스를 사용
 - Random 정책 RNG는 문제 생성 RNG와 분리
 - 기본 테스트 seed는 학습 기본 seed와 분리된 `10000~10099`
+- RL 정책의 여러 seed는 최대 100개씩 묶어 배치 평가
 - 결과 비용은 환경의 `info["completion_cost"]`만 합산
 
 중앙 출발 OOD 비교:
@@ -143,6 +143,7 @@ logs/
     └── AdvancedTaxi-v1_1/
         ├── AdvancedTaxi-v1.zip
         ├── best_model.zip
+        ├── best_model_vecnormalize.pkl
         ├── evaluations.npz
         └── AdvancedTaxi-v1/
             ├── args.yml
@@ -150,7 +151,7 @@ logs/
             └── vecnormalize.pkl
 ```
 
-평가기에서는 최종 모델만 지원합니다. `best_model.zip`은 저장 시점과 동일한 VecNormalize 통계를 별도로 보존하는 구조가 마련되기 전까지 선택하지 않습니다.
+평가기에서는 최종 모델을 사용합니다. 정규화를 사용하는 실행에서 `best_model.zip`이 생성되면 같은 시점의 통계도 `best_model_vecnormalize.pkl`로 함께 보존됩니다.
 
 TensorBoard:
 

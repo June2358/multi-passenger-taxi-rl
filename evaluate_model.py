@@ -21,11 +21,16 @@ import inspect
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
+
+import matplotlib
+
+matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
+import torch
 import yaml
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.utils import get_action_masks
@@ -42,6 +47,7 @@ from envs.envs import AdvancedTimeAttackTaxiEnv
 
 ALGO = "maskableppo"
 ENV_ID = "AdvancedTaxi-v1"
+RL_EVALUATION_BATCH_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -53,41 +59,21 @@ class RunArtifacts:
     args: Path
 
 
-class _RLZooSafeLoader(yaml.SafeLoader):
-    """RL-Zoo가 저장한 OrderedDict 태그만 안전하게 읽는 로더."""
-
-
-def _construct_ordered_dict(loader: yaml.SafeLoader, node: yaml.Node) -> dict[str, Any]:
-    values = loader.construct_sequence(node, deep=True)
-    if len(values) != 1:
-        raise yaml.constructor.ConstructorError(
-            None,
-            None,
-            "Invalid RL-Zoo OrderedDict payload",
-            node.start_mark,
-        )
-    return dict(values[0])
-
-
-_RLZooSafeLoader.add_constructor(
-    "tag:yaml.org,2002:python/object/apply:collections.OrderedDict",
-    _construct_ordered_dict,
-)
-
-
 def _load_mapping(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as file:
-        data = yaml.load(file, Loader=_RLZooSafeLoader)
+        data = yaml.safe_load(file)
     if not isinstance(data, dict):
         raise ValueError(f"설정 파일의 최상위 값이 mapping이 아닙니다: {path}")
     return data
 
 
 def _uses_vecnormalize(value: Any) -> bool:
-    """Mirror RL-Zoo's normalization activation semantics."""
-    if isinstance(value, (dict, str)):
+    """Return whether the saved training configuration enabled VecNormalize."""
+    if isinstance(value, dict):
         return True
-    return bool(value)
+    if isinstance(value, bool):
+        return value
+    raise ValueError("config.yml의 normalize는 boolean 또는 mapping이어야 합니다.")
 
 
 def resolve_run_artifacts(
@@ -96,7 +82,7 @@ def resolve_run_artifacts(
     env_id: str,
     exp_id: int,
 ) -> RunArtifacts:
-    """명시한 RL-Zoo 실행의 final model과 설정 파일을 해석한다."""
+    """명시한 학습 실행의 final model과 설정 파일을 해석한다."""
     if exp_id < 1:
         raise ValueError("exp_id는 1 이상이어야 합니다.")
 
@@ -326,6 +312,83 @@ class _RLEpisodeRunner:
         return total_cost, path_data
 
 
+def _run_rl_batch(
+    model: MaskablePPO,
+    env_kwargs: Mapping[str, Any],
+    vecnormalize_path: Path | None,
+    seeds: Sequence[int],
+) -> list[float]:
+    """Evaluate contiguous seeds together without changing episode semantics."""
+    seed_values = [int(seed) for seed in seeds]
+    if not seed_values:
+        return []
+    expected = list(range(seed_values[0], seed_values[0] + len(seed_values)))
+    if seed_values != expected:
+        raise ValueError("배치 평가 seed는 연속된 오름차순이어야 합니다.")
+
+    def make_env() -> AdvancedTimeAttackTaxiEnv:
+        return AdvancedTimeAttackTaxiEnv(**dict(env_kwargs))
+
+    vec_env: DummyVecEnv | VecNormalize = DummyVecEnv(
+        [make_env for _ in seed_values]
+    )
+    try:
+        if vecnormalize_path is not None:
+            vec_env = VecNormalize.load(str(vecnormalize_path), vec_env)
+            vec_env.training = False
+            vec_env.norm_reward = False
+
+        vec_env.seed(seed_values[0])
+        obs = vec_env.reset()
+        total_costs = np.zeros(len(seed_values), dtype=np.float64)
+        finished = np.zeros(len(seed_values), dtype=bool)
+        max_steps = int(env_kwargs["num_passengers"])
+
+        for _ in range(max_steps):
+            try:
+                masks = get_action_masks(vec_env)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Action mask를 가져오지 못해 RL 배치 평가를 중단합니다."
+                ) from exc
+            actions, _ = model.predict(
+                obs,
+                action_masks=masks,
+                deterministic=True,
+            )
+            obs, _, dones, infos = vec_env.step(actions)
+            active = ~finished
+            for index in np.flatnonzero(active):
+                total_costs[index] += float(infos[int(index)]["completion_cost"])
+            finished |= np.asarray(dones, dtype=bool)
+            if np.all(finished):
+                return total_costs.tolist()
+
+        raise RuntimeError("RL 배치 평가가 예상된 승객 수 안에 종료되지 않았습니다.")
+    finally:
+        vec_env.close()
+
+
+def _run_rl_seeds_batched(
+    model: MaskablePPO,
+    env_kwargs: Mapping[str, Any],
+    vecnormalize_path: Path | None,
+    seeds: Sequence[int],
+) -> list[float]:
+    seed_values = list(seeds)
+    costs: list[float] = []
+    for offset in range(0, len(seed_values), RL_EVALUATION_BATCH_SIZE):
+        costs.extend(
+            _run_rl_batch(
+                model,
+                env_kwargs,
+                vecnormalize_path,
+                seed_values[offset : offset + RL_EVALUATION_BATCH_SIZE],
+            )
+        )
+    return costs
+
+
 def visualize_path(
     path_data: Dict[str, Any],
     passengers: List[List[int]],
@@ -428,13 +491,11 @@ def visualize_path(
 
     plt.tight_layout()
 
-    if output_dir:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        filename = output_dir / f"{scenario}_{policy}_seed{seed}.png"
-        plt.savefig(filename, dpi=150, bbox_inches="tight")
-        print(f"[INFO] 시각화 저장: {filename}")
-    else:
-        plt.show()
+    target_dir = output_dir or ROOT / "visualizations"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = target_dir / f"{scenario}_{policy}_seed{seed}.png"
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    print(f"[INFO] 시각화 저장: {filename}")
 
     plt.close()
 
@@ -458,18 +519,25 @@ def evaluate_scenarios(
         scenario_env_kwargs = _scenario_kwargs(env_kwargs, scenario)
         random_vals = []
         greedy_vals = []
-        rl_vals = []
-        rl_runner = _RLEpisodeRunner(model, scenario_env_kwargs, vecnormalize_path)
-        try:
-            for seed in evaluation_seeds:
-                total_cost, _ = _run_random(scenario_env_kwargs, seed, track_path=False)
-                random_vals.append(total_cost)
-                total_cost, _ = _run_greedy(scenario_env_kwargs, seed, track_path=False)
-                greedy_vals.append(total_cost)
-                total_cost, _ = rl_runner.run(seed, track_path=False)
-                rl_vals.append(total_cost)
+        for seed in evaluation_seeds:
+            total_cost, _ = _run_random(scenario_env_kwargs, seed, track_path=False)
+            random_vals.append(total_cost)
+            total_cost, _ = _run_greedy(scenario_env_kwargs, seed, track_path=False)
+            greedy_vals.append(total_cost)
+        rl_vals = _run_rl_seeds_batched(
+            model,
+            scenario_env_kwargs,
+            vecnormalize_path,
+            evaluation_seeds,
+        )
 
-            if visualize:
+        if visualize:
+            rl_runner = _RLEpisodeRunner(
+                model,
+                scenario_env_kwargs,
+                vecnormalize_path,
+            )
+            try:
                 snapshot_env = AdvancedTimeAttackTaxiEnv(**scenario_env_kwargs)
                 try:
                     snapshot_env.reset(seed=visualize_seed)
@@ -520,8 +588,8 @@ def evaluate_scenarios(
                         visualize_seed,
                         output_dir,
                     )
-        finally:
-            rl_runner.close()
+            finally:
+                rl_runner.close()
 
         results[scenario] = {
             "random_mean": float(np.mean(random_vals)),
@@ -555,7 +623,7 @@ def _validate_model_spaces(model: MaskablePPO, env_kwargs: Mapping[str, Any]) ->
 def main() -> None:
     parser = argparse.ArgumentParser(description=f"{ENV_ID} 학습 모델 평가 스크립트 (시각화 포함)")
     parser.add_argument("--logs-dir", type=str, default="logs", help="로그 디렉터리 (기본: logs)")
-    parser.add_argument("--exp-id", type=int, required=True, help="평가할 RL-Zoo 실험 ID")
+    parser.add_argument("--exp-id", type=int, required=True, help="평가할 학습 실험 ID")
     parser.add_argument(
         "--center-start",
         action="store_true",
@@ -563,10 +631,14 @@ def main() -> None:
     )
     parser.add_argument("--num-seeds", type=int, default=100, help="시나리오별 평가 seed 수 (기본: 100)")
     parser.add_argument("--seed-start", type=int, default=10_000, help="평가 seed 시작값 (기본: 10000)")
+    parser.add_argument("--num-threads", type=int, default=1, help="PyTorch CPU intra-op thread 수")
     parser.add_argument("--visualize", action="store_true", help="시각화 생성 여부")
     parser.add_argument("--visualize-seed", type=int, default=10_000, help="시각화에 사용할 시드 (기본: 10000)")
     parser.add_argument("--output-dir", type=str, default="visualizations", help="시각화 저장 디렉터리 (기본: visualizations)")
     args = parser.parse_args()
+    if args.num_threads < 1:
+        parser.error("--num-threads는 1 이상이어야 합니다.")
+    torch.set_num_threads(args.num_threads)
 
     logs_dir = (ROOT / args.logs_dir).resolve()
     artifacts = resolve_run_artifacts(logs_dir, ALGO, ENV_ID, args.exp_id)

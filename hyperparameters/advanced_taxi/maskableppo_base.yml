@@ -1,7 +1,16 @@
 # Conservative MaskablePPO baseline for AdvancedTaxi-v1.
 
-AdvancedTaxi-v1:
-  policy: MlpPolicy
+policy: MlpPolicy
+n_timesteps: 1000000
+n_envs: 8
+
+normalize:
+  norm_obs: true
+  norm_reward: false
+  clip_obs: 10.0
+  gamma: 1.0
+
+model_kwargs:
   n_steps: 512
   batch_size: 128
   n_epochs: 5
@@ -13,11 +22,8 @@ AdvancedTaxi-v1:
   vf_coef: 0.5
   max_grad_norm: 0.5
   target_kl: 0.02
-  policy_kwargs: "dict(net_arch=dict(pi=[128, 128], vf=[128, 128]), activation_fn=nn.ReLU)"
-  n_timesteps: !!float 1e6
-  n_envs: 8
-  normalize:
-    norm_obs: true
-    norm_reward: false
-    clip_obs: 10.0
-    gamma: 1.0
+  policy_kwargs:
+    net_arch:
+      pi: [128, 128]
+      vf: [128, 128]
+    activation_fn: relu

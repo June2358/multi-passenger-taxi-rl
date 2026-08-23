@@ -54,6 +54,23 @@ class _OneStepEnv(gym.Env):
         return 1, 1.0, not self.truncate, self.truncate, {}
 
 
+class _IncreasingRewardEnv(gym.Env):
+    metadata = {}
+
+    def __init__(self):
+        self.observation_space = gym.spaces.Discrete(2)
+        self.action_space = gym.spaces.Discrete(2)
+        self.episode = 0
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.episode += 1
+        return 0, {}
+
+    def step(self, action):
+        return 1, float(self.episode), True, False, {}
+
+
 class _RecordingWriter:
     instances = []
 
@@ -155,7 +172,7 @@ class TrainQlearningIntegrationTests(unittest.TestCase):
             conf_file = temp_root / "qlearning.yml"
             conf_file.write_text(
                 """
-Taxi-v3:
+Taxi-v4:
   learning_rate: 0.2
   gamma: 0.9
   epsilon_start: 1.0
@@ -177,7 +194,7 @@ Taxi-v3:
                 contextlib.redirect_stdout(output),
             ):
                 exp_dir, model_path = qlearning_train.train_qlearning(
-                    env_id="Taxi-v3",
+                    env_id="Taxi-v4",
                     conf_file=conf_file,
                     n_timesteps=5,
                     seed=17,
@@ -188,7 +205,7 @@ Taxi-v3:
 
             saved_config = yaml.safe_load(
                 (exp_dir / "config.yml").read_text(encoding="utf-8")
-            )["Taxi-v3"]
+            )["Taxi-v4"]
             self.assertEqual(saved_config["n_timesteps"], 5)
             self.assertEqual(saved_config["seed"], 17)
             self.assertEqual(saved_config["eval_seed"], derive_eval_seed(17))
@@ -204,6 +221,7 @@ Taxi-v3:
             ]
             self.assertEqual(len(rollout_rewards), 1)
             self.assertEqual(len(epsilon_values), 1)
+            self.assertEqual(rollout_rewards[0][2], 3)
             self.assertAlmostEqual(epsilon_values[0][1], 0.55)
             self.assertIn("총 에피소드: 1", output.getvalue())
 
@@ -224,7 +242,7 @@ Taxi-v3:
             conf_file = (
                 qlearning_train.ROOT
                 / "hyperparameters"
-                / "taxi_v3"
+                / "taxi_v4"
                 / "qlearning_base.yml"
             )
 
@@ -249,6 +267,63 @@ Taxi-v3:
             self.assertTrue(
                 np.array_equal(np.load(first_model), np.load(second_model))
             )
+
+    def test_tensorboard_metrics_are_throttled_and_final_window_is_logged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            conf_file = temp_root / "qlearning.yml"
+            conf_file.write_text(
+                """
+Taxi-v4:
+  learning_rate: 0.2
+  gamma: 0.9
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  epsilon_decay_episodes: 2
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(
+                    qlearning_train.gym,
+                    "make",
+                    side_effect=lambda _env_id: _IncreasingRewardEnv(),
+                ),
+                mock.patch.object(qlearning_train, "SummaryWriter", _RecordingWriter),
+            ):
+                exp_dir, _ = qlearning_train.train_qlearning(
+                    env_id="Taxi-v4",
+                    conf_file=conf_file,
+                    n_timesteps=401,
+                    seed=41,
+                    exp_id=1,
+                    log_dir=temp_root / "logs",
+                    verbose=0,
+                )
+
+            writer = _RecordingWriter.instances[-1]
+            rollout_rewards = [
+                scalar for scalar in writer.scalars if scalar[0] == "rollout/ep_rew_mean"
+            ]
+            self.assertEqual(
+                [step for _, _, step in rollout_rewards],
+                [200, 400, 401],
+            )
+            self.assertEqual(
+                [value for _, value, _ in rollout_rewards],
+                [150.5, 350.5, 351.5],
+            )
+
+            monitor_lines = (exp_dir / "monitor.csv").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            episode_rows = [
+                line
+                for line in monitor_lines
+                if line and not line.startswith("#")
+            ][1:]
+            self.assertEqual(len(episode_rows), 401)
 
     def test_training_bootstraps_when_environment_truncates(self):
         make_count = 0
@@ -275,7 +350,7 @@ Taxi-v3:
             conf_file = temp_root / "qlearning.yml"
             conf_file.write_text(
                 """
-Taxi-v3:
+Taxi-v4:
   learning_rate: 0.2
   gamma: 0.9
   epsilon_start: 1.0
@@ -295,7 +370,7 @@ Taxi-v3:
                 ),
             ):
                 qlearning_train.train_qlearning(
-                    env_id="Taxi-v3",
+                    env_id="Taxi-v4",
                     conf_file=conf_file,
                     n_timesteps=1,
                     seed=31,
@@ -307,19 +382,19 @@ Taxi-v3:
         self.assertEqual(terminated_arguments, [False])
 
     def test_non_taxi_environment_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Only Taxi-v3 is supported"):
+        with self.assertRaisesRegex(ValueError, "Only Taxi-v4 is supported"):
             qlearning_train.train_qlearning(env_id="AdvancedTaxi-v1")
 
     def test_obsolete_or_unknown_config_keys_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             conf_file = Path(temp_dir) / "qlearning.yml"
             conf_file.write_text(
-                "Taxi-v3:\n  episodes: 100\n  learning_rate: 0.1\n",
+                "Taxi-v4:\n  episodes: 100\n  learning_rate: 0.1\n",
                 encoding="utf-8",
             )
 
             with self.assertRaisesRegex(ValueError, "episodes"):
-                qlearning_train.load_hyperparams(conf_file, "Taxi-v3")
+                qlearning_train.load_hyperparams(conf_file, "Taxi-v4")
 
     def test_invalid_run_limits_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "n_timesteps"):

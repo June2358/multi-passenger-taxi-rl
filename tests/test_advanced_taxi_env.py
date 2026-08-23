@@ -17,6 +17,15 @@ def passenger_snapshot(env: AdvancedTimeAttackTaxiEnv) -> np.ndarray:
     return np.asarray(env.passengers, dtype=int)
 
 
+def set_passenger_state(
+    env: AdvancedTimeAttackTaxiEnv,
+    passengers: list[list[int]],
+) -> None:
+    """테스트용 승객 상태를 내부 저장 형식에 맞춰 설정한다."""
+    env.passengers = np.ascontiguousarray(passengers, dtype=int)
+    env._remaining_passengers = int(np.count_nonzero(env.passengers[:, 4] == 0))
+
+
 class AdvancedTaxiConstructionTests(unittest.TestCase):
     def test_gymnasium_environment_contract(self):
         env = gym.make("AdvancedTaxi-v1")
@@ -214,10 +223,10 @@ class AdvancedTaxiStepTests(unittest.TestCase):
 
     def test_reward_and_info_are_the_authoritative_transition_cost(self):
         self.env.taxi_loc = np.array([0, 0], dtype=int)
-        self.env.passengers = [
+        set_passenger_state(self.env, [
             [1, 1, 3, 1, 0],
             [4, 4, 4, 5, 0],
-        ]
+        ])
 
         _, reward, terminated, truncated, info = self.env.step(0)
 
@@ -267,7 +276,7 @@ class AdvancedTaxiStepTests(unittest.TestCase):
             env = AdvancedTimeAttackTaxiEnv(num_passengers=3, grid_size=10)
             env.reset(seed=1)
             env.taxi_loc = np.array([0, 0], dtype=int)
-            env.passengers = [list(row) for row in passenger_rows]
+            set_passenger_state(env, passenger_rows)
             return sum(env.step(action)[4]["completion_cost"] for action in actions)
 
         original_cost = rollout(passengers, physical_order)

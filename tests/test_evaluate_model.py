@@ -6,17 +6,48 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from evaluate_model import (
+    _RLEpisodeRunner,
     _evaluation_seeds,
     _load_mapping,
+    _run_rl_seeds_batched,
     load_evaluation_env_kwargs,
     resolve_run_artifacts,
 )
 
 
+class _FirstAvailableModel:
+    def predict(self, _obs, *, action_masks, deterministic):
+        assert deterministic
+        return np.argmax(np.asarray(action_masks, dtype=bool), axis=1), None
+
+
 class EvaluationArtifactTests(unittest.TestCase):
+    def test_batched_rl_evaluation_matches_scalar_seed_results(self):
+        env_kwargs = {
+            "num_passengers": 6,
+            "grid_size": 30,
+            "scenario_mode": "complex",
+            "start_at_center": False,
+            "scenario_mix": [0.4, 0.3, 0.3],
+            "mix_noise_std": 0.0,
+            "mix_epsilon": 0.001,
+        }
+        model = _FirstAvailableModel()
+        seeds = list(range(100, 107))
+        scalar_runner = _RLEpisodeRunner(model, env_kwargs, None)
+        try:
+            scalar = [scalar_runner.run(seed)[0] for seed in seeds]
+        finally:
+            scalar_runner.close()
+
+        batched = _run_rl_seeds_batched(model, env_kwargs, None, seeds)
+
+        self.assertEqual(batched, scalar)
+
     def test_evaluation_seed_range_is_explicit_and_disjoint_from_default_train_seed(self):
         seeds = _evaluation_seeds(10_000, 3)
 
@@ -164,7 +195,7 @@ class EvaluationArtifactTests(unittest.TestCase):
             self.assertEqual(kwargs["scenario_mode"], "mixed")
             self.assertIn("scenario_mix", kwargs)
 
-    def test_incomplete_legacy_environment_contract_is_rejected(self):
+    def test_incomplete_environment_contract_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_dir = self._create_run(root)
@@ -190,7 +221,7 @@ class EvaluationArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "재학습"):
                 load_evaluation_env_kwargs(artifacts)
 
-    def test_rl_zoo_ordered_dict_tag_is_loaded_without_unsafe_loader(self):
+    def test_python_object_yaml_tag_is_rejected(self):
         content = """\
 !!python/object/apply:collections.OrderedDict
 - - - algo
@@ -202,10 +233,8 @@ class EvaluationArtifactTests(unittest.TestCase):
             path = Path(directory) / "args.yml"
             path.write_text(content, encoding="utf-8")
 
-            self.assertEqual(
-                _load_mapping(path),
-                {"algo": "maskableppo", "env": "AdvancedTaxi-v1"},
-            )
+            with self.assertRaises(yaml.constructor.ConstructorError):
+                _load_mapping(path)
 
 
 if __name__ == "__main__":

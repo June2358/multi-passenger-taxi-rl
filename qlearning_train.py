@@ -1,20 +1,22 @@
 """
 Q-Learning 학습 모듈 (RL-Zoo 스타일)
 
-Taxi-v3 원본 환경(Discrete 500)을 사용하는 Tabular Q-Learning 구현.
+Taxi-v4 원본 환경(Discrete 500)을 사용하는 Tabular Q-Learning 구현.
 RL-Zoo와 동일한 저장 구조 및 로깅 형식을 사용합니다.
 """
 
+import argparse
 import sys
 import time
-import argparse
-import yaml
-import numpy as np
-import gymnasium as gym
+from collections import deque
 from pathlib import Path
-from typing import Optional, Dict, Any
-from torch.utils.tensorboard import SummaryWriter
+from typing import Any, Dict, Optional
+
+import gymnasium as gym
+import numpy as np
+import yaml
 from stable_baselines3.common.monitor import Monitor
+from torch.utils.tensorboard import SummaryWriter
 
 # 프로젝트 루트를 Python 경로에 추가
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +35,9 @@ QLEARNING_HYPERPARAM_KEYS = frozenset(
         "epsilon_decay_episodes",
     }
 )
+
+ROLLING_WINDOW_SIZE = 100
+TENSORBOARD_LOG_INTERVAL_EPISODES = 200
 
 
 def display_path(path: Path) -> str:
@@ -59,7 +64,7 @@ def select_epsilon_greedy_action(
 ) -> int:
     """Select an action from the full discrete action set.
 
-    Taxi-v3's existing Q-Learning benchmark is unmasked, so exploration and
+    Taxi-v4's existing Q-Learning benchmark is unmasked, so exploration and
     greedy selection both consider every action. Greedy ties are randomized to
     avoid a permanent preference for the lowest action index.
     """
@@ -117,7 +122,7 @@ def save_config(config_path: Path, hyperparams: Dict[str, Any], env_id: str):
 
 
 def train_qlearning(
-    env_id: str = "Taxi-v3",
+    env_id: str = "Taxi-v4",
     conf_file: Optional[Path] = None,
     n_timesteps: int = 500_000,
     seed: Optional[int] = None,
@@ -129,7 +134,7 @@ def train_qlearning(
     Q-Learning 학습 함수 (RL-Zoo 스타일)
     
     Args:
-        env_id: 환경 ID (예: "Taxi-v3")
+        env_id: 환경 ID (예: "Taxi-v4")
         conf_file: 하이퍼파라미터 YAML 파일 경로
         n_timesteps: 총 학습 타임스텝 수
         seed: 랜덤 시드
@@ -137,10 +142,10 @@ def train_qlearning(
         log_dir: 로그 디렉토리 (기본값: logs/qlearning)
         verbose: 출력 상세도 (0, 1, 2)
     """
-    if env_id != "Taxi-v3":
+    if env_id != "Taxi-v4":
         raise ValueError(
             f"Unsupported environment for tabular Q-Learning: {env_id}. "
-            "Only Taxi-v3 is supported."
+            "Only Taxi-v4 is supported."
         )
     if n_timesteps < 1:
         raise ValueError("n_timesteps must be at least 1")
@@ -152,7 +157,7 @@ def train_qlearning(
     
     if conf_file is None:
         # 기본 하이퍼파라미터 파일 찾기
-        env_dir = ROOT / "hyperparameters" / "taxi_v3"
+        env_dir = ROOT / "hyperparameters" / "taxi_v4"
         conf_file = env_dir / "qlearning.yml"
     
     if not conf_file.exists():
@@ -215,7 +220,7 @@ def train_qlearning(
     if seed is not None:
         env.action_space.seed(seed)
     
-    # Q-table 초기화 (Taxi-v3는 Discrete(500) 상태 공간)
+    # Q-table 초기화 (Taxi-v4는 Discrete(500) 상태 공간)
     state_size = env.observation_space.n  # 500
     action_size = env.action_space.n  # 6
     q_table = np.zeros((state_size, action_size), dtype=np.float32)
@@ -239,10 +244,28 @@ def train_qlearning(
     start_time = time.time()
     
     # SB3 형식: 이동 평균을 위한 윈도우
-    ep_reward_window = []
-    ep_len_window = []
-    td_error_window = []
-    window_size = 100  # SB3 기본값과 동일
+    ep_reward_window = deque(maxlen=ROLLING_WINDOW_SIZE)
+    ep_len_window = deque(maxlen=ROLLING_WINDOW_SIZE)
+    td_error_window = deque(maxlen=ROLLING_WINDOW_SIZE)
+    last_completed_step = 0
+    last_logged_episode = 0
+
+    def log_training_metrics(step: int) -> tuple[float, float, float]:
+        """TensorBoard에 현재 이동 지표를 기록하고 그 값을 반환합니다."""
+        ep_rew_mean = float(np.mean(ep_reward_window))
+        ep_len_mean = float(np.mean(ep_len_window))
+        td_error_mean_window = float(np.mean(td_error_window))
+
+        writer.add_scalar("rollout/ep_rew_mean", ep_rew_mean, step)
+        writer.add_scalar("rollout/ep_len_mean", ep_len_mean, step)
+        writer.add_scalar("train/epsilon", epsilon, step)
+        writer.add_scalar("train/td_error_mean", td_error_mean_window, step)
+
+        elapsed = time.time() - start_time
+        fps = step / max(1e-9, elapsed)
+        writer.add_scalar("time/fps", fps, step)
+        writer.add_scalar("time/total_timesteps", step, step)
+        return ep_rew_mean, ep_len_mean, fps
     
     ep = 0
     while total_steps < n_timesteps:
@@ -296,39 +319,35 @@ def train_qlearning(
         ep_len_window.append(ep_len)
         td_error_mean = float(np.mean(ep_td_errors)) if ep_td_errors else 0.0
         td_error_window.append(td_error_mean)
-        
-        # 윈도우 크기 제한
-        if len(ep_reward_window) > window_size:
-            ep_reward_window.pop(0)
-        if len(ep_len_window) > window_size:
-            ep_len_window.pop(0)
-        if len(td_error_window) > window_size:
-            td_error_window.pop(0)
-        
-        # TensorBoard 로깅 (RL-Zoo 스타일)
-        ep_rew_mean = float(np.mean(ep_reward_window)) if ep_reward_window else 0.0
-        ep_len_mean = float(np.mean(ep_len_window)) if ep_len_window else 0.0
-        td_error_mean_window = float(np.mean(td_error_window)) if td_error_window else 0.0
-        
-        writer.add_scalar("rollout/ep_rew_mean", ep_rew_mean, total_steps)
-        writer.add_scalar("rollout/ep_len_mean", ep_len_mean, total_steps)
-        writer.add_scalar("train/epsilon", epsilon, total_steps)
-        writer.add_scalar("train/td_error_mean", td_error_mean_window, total_steps)
-        
-        # 주기적 로깅
-        if verbose >= 1 and ((ep + 1) % 200 == 0 or ep == 0):
-            elapsed = time.time() - start_time
-            fps = total_steps / max(1e-9, elapsed)
-            writer.add_scalar("time/fps", fps, total_steps)
-            writer.add_scalar("time/total_timesteps", total_steps, total_steps)
-            print(f"\nEpisode {ep + 1} (Steps: {total_steps:,}/{n_timesteps:,})")
-            print(f"  보상 평균: {ep_rew_mean:.2f} | 길이 평균: {ep_len_mean:.1f} | epsilon: {epsilon:.4f} | fps: {fps:.1f}")
+
+        completed_episodes = ep + 1
+        last_completed_step = total_steps
+
+        # TensorBoard 기록은 I/O 부담을 줄이기 위해 일정 episode 간격으로 제한합니다.
+        if completed_episodes % TENSORBOARD_LOG_INTERVAL_EPISODES == 0:
+            ep_rew_mean, ep_len_mean, fps = log_training_metrics(total_steps)
+            last_logged_episode = completed_episodes
+
+            if verbose >= 1:
+                print(
+                    f"\nEpisode {completed_episodes} "
+                    f"(Steps: {total_steps:,}/{n_timesteps:,})"
+                )
+                print(
+                    f"  보상 평균: {ep_rew_mean:.2f} | "
+                    f"길이 평균: {ep_len_mean:.1f} | "
+                    f"epsilon: {epsilon:.4f} | fps: {fps:.1f}"
+                )
         
         ep += 1
         
         # 타임스텝 제한 확인
         if total_steps >= n_timesteps:
             break
+
+    # 마지막 완료 episode가 기록 주기와 일치하지 않아도 최종 이동 지표는 남깁니다.
+    if ep > 0 and last_logged_episode != ep:
+        log_training_metrics(last_completed_step)
     
     # 최종 평가
     if verbose >= 1:
@@ -384,7 +403,7 @@ def train_qlearning(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tabular Q-Learning (Taxi-v3 전용)")
+    parser = argparse.ArgumentParser(description="Tabular Q-Learning (Taxi-v4 전용)")
     parser.add_argument(
         "--n-timesteps",
         "-n",
@@ -401,7 +420,7 @@ def main():
     args = parser.parse_args()
 
     train_qlearning(
-        env_id="Taxi-v3",
+        env_id="Taxi-v4",
         conf_file=None,
         n_timesteps=args.n_timesteps,
         seed=args.seed,

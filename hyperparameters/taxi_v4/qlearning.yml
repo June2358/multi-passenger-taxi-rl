@@ -1,8 +1,8 @@
-# Q-Learning tuned hyperparameters for Taxi-v3
+# Q-Learning tuned hyperparameters for Taxi-v4
 # RL-Zoo format: environment ID as key
-# Uses original Taxi-v3 environment (Discrete 500 states, no wrapper)
+# Uses original Taxi-v4 environment (Discrete 500 states, no wrapper)
 
-Taxi-v3:
+Taxi-v4:
   # Q-Learning specific parameters (tuned)
   learning_rate: 0.2
   gamma: 0.99
@@ -11,5 +11,5 @@ Taxi-v3:
   epsilon_decay_episodes: 1000
   
   # Q-Learning uses original environment (no wrapper)
-  # Taxi-v3 already provides Discrete(500) state space, so use it as-is
+  # Taxi-v4 already provides Discrete(500) state space, so use it as-is
   # env_wrapper: []  # Empty list or comment out

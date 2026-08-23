@@ -7,11 +7,7 @@ from numbers import Integral
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from envs.utils import (
-    compute_trip_time,
-    count_remaining_passengers,
-    compute_manhattan_distance,
-)
+from envs.utils import compute_trip_time
 
 
 class AdvancedTimeAttackTaxiEnv(gym.Env):
@@ -140,15 +136,16 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         dist_service = int(dist_service)
         time_elapsed = int(dist_empty + dist_service)
 
-        # remaining_passengers 계산 - 유틸리티 함수 사용
-        remaining_passengers = int(count_remaining_passengers(self.passengers))
+        # 완료시간 비용에는 이번에 운송할 승객까지 포함한다.
+        remaining_passengers = self._remaining_passengers
         completion_cost = int(time_elapsed * remaining_passengers)
         reward = -completion_cost / 100.0  # 스케일 다운
 
         # 상태 업데이트
         self.taxi_loc = passenger_destination.copy()
-        self.passengers[action][4] = 1
-        terminated = all(p[4] == 1 for p in self.passengers)
+        self.passengers[action, 4] = 1
+        self._remaining_passengers -= 1
+        terminated = self._remaining_passengers == 0
         truncated = False
 
         info = {
@@ -169,7 +166,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
     # Helpers
     # -------------------------
     def action_masks(self):
-        return np.asarray([p[4] == 0 for p in self.passengers], dtype=bool)
+        return self.passengers[:, 4] == 0
 
     def _init_scenario(self):
         raw_passengers = []
@@ -289,7 +286,9 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         # 승객 슬롯에 의미가 없도록 매 에피소드에 한 번 순서를 섞는다.
         # 이로써 complex의 trap/honey 유형을 행동 인덱스로 암기할 수 없다.
         order = self.np_random.permutation(self.num_passengers)
-        self.passengers = [raw_passengers[int(index)] for index in order]
+        passenger_array = np.asarray(raw_passengers, dtype=int)
+        self.passengers = np.ascontiguousarray(passenger_array[order])
+        self._remaining_passengers = self.num_passengers
 
     def _pick_scenario(self) -> str:
         if self.scenario_mode == "mixed":
@@ -310,30 +309,20 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         return self.scenario_mode
 
     def _get_state(self):
-        taxi_loc_arr = np.array(self.taxi_loc, dtype=np.float32)
-        norm = 100.0  # 고정 정규화 스케일
+        norm = np.float32(100.0)  # 고정 정규화 스케일
+        active = self.passengers[:, 4] == 0
+        active_passengers = self.passengers[active]
 
-        state = []
-        for p in self.passengers:
-            status = float(p[4])
+        # 완료된 승객은 status만 1로 남기고 좌표/거리는 0으로 정리한다.
+        state = np.zeros((self.num_passengers, 6), dtype=np.float32)
+        state[:, 4] = self.passengers[:, 4]
 
-            if status == 1.0:
-                # 완료된 승객은 좌표/거리 정보를 0으로 정리해 관찰 노이즈를 제거
-                state.extend([0.0, 0.0, 0.0, 0.0, status, 0.0])
-                continue
+        taxi_loc = self.taxi_loc.astype(np.float32)
+        pickup_delta = active_passengers[:, :2] - taxi_loc
+        destination_delta = active_passengers[:, 2:4] - active_passengers[:, :2]
 
-            # 택시 -> 승객 (정규화)
-            rel_x = float(p[0] - taxi_loc_arr[0]) / norm
-            rel_y = float(p[1] - taxi_loc_arr[1]) / norm
-
-            # 승객 -> 목적지 (정규화)
-            dest_dx = float(p[2] - p[0]) / norm
-            dest_dy = float(p[3] - p[1]) / norm
-
-            # 택시-승객 맨해튼 거리 (정규화)
-            dist = float(compute_manhattan_distance(taxi_loc_arr, p[:2])) / norm
-
-            state.extend([rel_x, rel_y, dest_dx, dest_dy, status, dist])
-
-        return np.array(state, dtype=np.float32)
+        state[active, :2] = pickup_delta / norm
+        state[active, 2:4] = destination_delta / norm
+        state[active, 5] = np.abs(pickup_delta).sum(axis=1) / norm
+        return state.reshape(-1)
 

@@ -1,12 +1,12 @@
-# DQN base hyperparameters for Taxi-v3 (decoded observation)
+# DQN base hyperparameters for Taxi-v4 (decoded observation)
 # Default SB3 parameters without tuning
 # Uses TaxiDecodedObservationWrapper: 11-dim vector (taxi pos + passenger/dest one-hot)
 
-Taxi-v3:
+Taxi-v4:
   # Policy type (required)
   policy: MlpPolicy
   
-  # Basic hyperparameters (Stable-Baselines3 2.7.1 defaults)
+  # Basic hyperparameters (Stable-Baselines3 2.9.0 defaults)
   learning_rate: !!float 1e-4
   exploration_fraction: 0.1
   exploration_initial_eps: 1.0
@@ -21,7 +21,7 @@ Taxi-v3:
   # Note: Input dimension changed from 500 (one-hot) to 11 (decoded)
   policy_kwargs: "dict(net_arch=[64, 64])"
   
-  # Environment wrapper: decode Taxi-v3 to 11-dim meaningful vector
+  # Environment wrapper: decode Taxi-v4 to 11-dim meaningful vector
   env_wrapper:
     - envs.TaxiDecodedObservationWrapper
   
