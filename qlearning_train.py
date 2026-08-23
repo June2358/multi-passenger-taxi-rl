@@ -5,10 +5,8 @@ Taxi-v3 원본 환경(Discrete 500)을 사용하는 Tabular Q-Learning 구현.
 RL-Zoo와 동일한 저장 구조 및 로깅 형식을 사용합니다.
 """
 
-import os
 import sys
 import time
-import random
 import argparse
 import yaml
 import numpy as np
@@ -26,6 +24,65 @@ if str(ROOT) not in sys.path:
 # 통합 환경 패키지 import
 import envs  # noqa: F401
 
+QLEARNING_HYPERPARAM_KEYS = frozenset(
+    {
+        "learning_rate",
+        "gamma",
+        "epsilon_start",
+        "epsilon_end",
+        "epsilon_decay_episodes",
+    }
+)
+
+
+def display_path(path: Path) -> str:
+    """Return a readable path without requiring it to be inside the project."""
+    resolved_path = path.resolve()
+    try:
+        return str(resolved_path.relative_to(ROOT))
+    except ValueError:
+        return str(resolved_path)
+
+
+def derive_eval_seed(seed: Optional[int]) -> Optional[int]:
+    """Derive a deterministic evaluation seed independent of the training seed."""
+    if seed is None:
+        return None
+    child = np.random.SeedSequence(seed).spawn(1)[0]
+    return int(child.generate_state(1, dtype=np.uint32)[0])
+
+
+def select_epsilon_greedy_action(
+    q_values: np.ndarray,
+    epsilon: float,
+    rng: np.random.Generator,
+) -> int:
+    """Select an action from the full discrete action set.
+
+    Taxi-v3's existing Q-Learning benchmark is unmasked, so exploration and
+    greedy selection both consider every action. Greedy ties are randomized to
+    avoid a permanent preference for the lowest action index.
+    """
+    if rng.random() < epsilon:
+        return int(rng.integers(q_values.size))
+
+    max_value = np.max(q_values)
+    greedy_actions = np.flatnonzero(q_values == max_value)
+    return int(rng.choice(greedy_actions))
+
+
+def compute_td_target(
+    reward: float,
+    gamma: float,
+    next_q_values: np.ndarray,
+    *,
+    terminated: bool,
+) -> float:
+    """Compute a Q-Learning target, bootstrapping across time-limit truncation."""
+    if terminated:
+        return float(reward)
+    return float(reward + gamma * np.max(next_q_values))
+
 
 def get_next_exp_id(log_dir: Path, env_id: str) -> int:
     """다음 실험 ID를 찾습니다 (RL-Zoo 스타일)"""
@@ -40,10 +97,16 @@ def load_hyperparams(conf_file: Path, env_id: str) -> Dict[str, Any]:
     with open(conf_file, 'r', encoding='utf-8') as f:
         hyperparams = yaml.safe_load(f)
     
-    if env_id not in hyperparams:
+    if not isinstance(hyperparams, dict) or env_id not in hyperparams:
         raise ValueError(f"Environment {env_id} not found in {conf_file}")
-    
-    return hyperparams[env_id]
+
+    env_hyperparams = hyperparams[env_id]
+    if not isinstance(env_hyperparams, dict):
+        raise ValueError(f"Hyperparameters for {env_id} must be a mapping")
+    unknown = set(env_hyperparams) - QLEARNING_HYPERPARAM_KEYS
+    if unknown:
+        raise ValueError(f"Unknown Q-Learning hyperparameters: {sorted(unknown)}")
+    return env_hyperparams
 
 
 def save_config(config_path: Path, hyperparams: Dict[str, Any], env_id: str):
@@ -74,33 +137,48 @@ def train_qlearning(
         log_dir: 로그 디렉토리 (기본값: logs/qlearning)
         verbose: 출력 상세도 (0, 1, 2)
     """
+    if env_id != "Taxi-v3":
+        raise ValueError(
+            f"Unsupported environment for tabular Q-Learning: {env_id}. "
+            "Only Taxi-v3 is supported."
+        )
+    if n_timesteps < 1:
+        raise ValueError("n_timesteps must be at least 1")
+    if exp_id is not None and exp_id < 1:
+        raise ValueError("exp_id must be at least 1")
+
     if log_dir is None:
         log_dir = ROOT / "logs" / "qlearning"
     
     if conf_file is None:
         # 기본 하이퍼파라미터 파일 찾기
-        hyperparams_dir = ROOT / "hyperparameters"
-        env_folder_map = {
-            "Taxi-v3": "taxi_v3",
-            "AdvancedTaxi-v0": "advanced_taxi",
-        }
-        
-        if env_id in env_folder_map:
-            env_dir = hyperparams_dir / env_folder_map[env_id]
-        else:
-            env_dir = hyperparams_dir
-        
+        env_dir = ROOT / "hyperparameters" / "taxi_v3"
         conf_file = env_dir / "qlearning.yml"
-        
-        if not conf_file.exists():
-            # base 파일 시도
-            conf_file = env_dir / "qlearning_base.yml"
     
     if not conf_file.exists():
         raise FileNotFoundError(f"Hyperparameter file not found: {conf_file}")
     
     # 하이퍼파라미터 로드
     hyperparams = load_hyperparams(conf_file, env_id)
+
+    # 하이퍼파라미터 및 실행 인자를 실제 사용값으로 해석합니다.
+    learning_rate = float(hyperparams.get("learning_rate", 0.1))
+    gamma = float(hyperparams.get("gamma", 0.99))
+    epsilon_start = float(hyperparams.get("epsilon_start", 1.0))
+    epsilon_end = float(hyperparams.get("epsilon_end", 0.05))
+    epsilon_decay_episodes = int(hyperparams.get("epsilon_decay_episodes", 500))
+    eval_seed = derive_eval_seed(seed)
+
+    resolved_hyperparams = {
+        "learning_rate": learning_rate,
+        "gamma": gamma,
+        "epsilon_start": epsilon_start,
+        "epsilon_end": epsilon_end,
+        "epsilon_decay_episodes": epsilon_decay_episodes,
+        "n_timesteps": int(n_timesteps),
+        "seed": seed,
+        "eval_seed": eval_seed,
+    }
     
     # 실험 디렉토리 생성
     if exp_id is None:
@@ -111,16 +189,16 @@ def train_qlearning(
     
     # config.yml 저장
     config_path = exp_dir / "config.yml"
-    save_config(config_path, hyperparams, env_id)
+    save_config(config_path, resolved_hyperparams, env_id)
     
     if verbose >= 1:
         print("=" * 60)
         print(f"Q-Learning 학습 시작")
         print(f"  환경: {env_id}")
-        print(f"  하이퍼파라미터: {conf_file.relative_to(ROOT)}")
+        print(f"  하이퍼파라미터: {display_path(conf_file)}")
         print(f"  타임스텝: {n_timesteps:,}")
         print(f"  실험 ID: {exp_id}")
-        print(f"  로그 디렉토리: {exp_dir.relative_to(ROOT)}")
+        print(f"  로그 디렉토리: {display_path(exp_dir)}")
         print("=" * 60)
     
     # 환경 생성 (원본 환경 사용, wrapper 없음)
@@ -129,12 +207,13 @@ def train_qlearning(
     # Monitor wrapper 적용 (RL-Zoo 스타일)
     monitor_file = exp_dir / "monitor.csv"
     env = Monitor(env, str(monitor_file))
-    
-    # 시드 설정
+
+    # 학습의 모든 행동 선택은 하나의 로컬 Generator를 사용합니다.
+    rng = np.random.default_rng(seed)
+
+    # action_space.sample()은 사용하지 않지만 외부 진단/확장을 위해 함께 시드합니다.
     if seed is not None:
-        env.reset(seed=seed)
-        np.random.seed(seed)
-        random.seed(seed)
+        env.action_space.seed(seed)
     
     # Q-table 초기화 (Taxi-v3는 Discrete(500) 상태 공간)
     state_size = env.observation_space.n  # 500
@@ -146,14 +225,6 @@ def train_qlearning(
         print(f"  상태 공간: Discrete({state_size})")
         print(f"  행동 공간: Discrete({action_size})")
         print(f"  Q-table 크기: {q_table.shape}")
-    
-    # 하이퍼파라미터 추출
-    episodes = hyperparams.get("episodes", 10000)
-    learning_rate = hyperparams.get("learning_rate", 0.1)
-    gamma = hyperparams.get("gamma", 0.99)
-    epsilon_start = hyperparams.get("epsilon_start", 1.0)
-    epsilon_end = hyperparams.get("epsilon_end", 0.05)
-    epsilon_decay_episodes = hyperparams.get("epsilon_decay_episodes", 500)
     
     # Epsilon 스케줄
     epsilon = epsilon_start
@@ -175,7 +246,9 @@ def train_qlearning(
     
     ep = 0
     while total_steps < n_timesteps:
-        obs, info = env.reset()
+        # 첫 reset에만 시드를 전달하면 이후 에피소드는 환경의 동일한 RNG
+        # 스트림을 이어 사용하므로 실행 전체가 재현 가능합니다.
+        obs, info = env.reset(seed=seed if ep == 0 else None)
         state = int(obs)  # Discrete 상태는 정수 그대로 사용
         terminated = False
         truncated = False
@@ -185,19 +258,20 @@ def train_qlearning(
         
         while not (terminated or truncated) and total_steps < n_timesteps:
             # Epsilon-greedy 행동 선택
-            if random.random() < epsilon:
-                action = env.action_space.sample()
-            else:
-                action = int(np.argmax(q_table[state]))
+            action = select_epsilon_greedy_action(q_table[state], epsilon, rng)
             
             next_obs, reward, terminated, truncated, info = env.step(action)
             next_state = int(next_obs)  # Discrete 상태는 정수 그대로 사용
             
             # Q-Learning 업데이트
-            done = terminated or truncated
-            td_target = reward
-            if not done:
-                td_target += gamma * np.max(q_table[next_state])
+            # truncation은 시간 제한일 뿐 MDP의 terminal state가 아니므로
+            # bootstrap을 중단하지 않습니다.
+            td_target = compute_td_target(
+                reward,
+                gamma,
+                q_table[next_state],
+                terminated=terminated,
+            )
             
             td_error = td_target - q_table[state, action]
             q_table[state, action] += learning_rate * td_error
@@ -207,6 +281,11 @@ def train_qlearning(
             ep_reward += reward
             ep_len += 1
             total_steps += 1
+
+        # n_timesteps가 에피소드 도중 소진되면 해당 partial episode는
+        # 완료 episode 지표, epsilon decay 및 episode 수에 포함하지 않습니다.
+        if not (terminated or truncated):
+            break
         
         # Epsilon decay
         if epsilon > epsilon_end:
@@ -242,7 +321,7 @@ def train_qlearning(
             fps = total_steps / max(1e-9, elapsed)
             writer.add_scalar("time/fps", fps, total_steps)
             writer.add_scalar("time/total_timesteps", total_steps, total_steps)
-            print(f"\nEpisode {ep + 1}/{episodes} (Steps: {total_steps:,}/{n_timesteps:,})")
+            print(f"\nEpisode {ep + 1} (Steps: {total_steps:,}/{n_timesteps:,})")
             print(f"  보상 평균: {ep_rew_mean:.2f} | 길이 평균: {ep_len_mean:.1f} | epsilon: {epsilon:.4f} | fps: {fps:.1f}")
         
         ep += 1
@@ -256,17 +335,18 @@ def train_qlearning(
         print("\n[2] 최종 평가 (탐욕 정책, 20 에피소드)...")
     
     eval_env = gym.make(env_id)
-    if seed is not None:
-        eval_env.reset(seed=seed)
+    eval_rng = np.random.default_rng(eval_seed)
+    if eval_seed is not None:
+        eval_env.action_space.seed(eval_seed)
     
     eval_rewards = []
-    for _ in range(20):
-        obs, info = eval_env.reset()
+    for eval_ep in range(20):
+        obs, info = eval_env.reset(seed=eval_seed if eval_ep == 0 else None)
         state = int(obs)
         terminated = truncated = False
         total_reward = 0.0
         while not (terminated or truncated):
-            action = int(np.argmax(q_table[state]))
+            action = select_epsilon_greedy_action(q_table[state], 0.0, eval_rng)
             obs, reward, terminated, truncated, info = eval_env.step(action)
             state = int(obs)
             total_reward += reward
@@ -287,7 +367,7 @@ def train_qlearning(
     np.save(model_path, q_table)
     
     if verbose >= 1:
-        print(f"\n[3] 모델 저장 완료: {model_path.relative_to(ROOT)}")
+        print(f"\n[3] 모델 저장 완료: {display_path(model_path)}")
     
     # 정리
     env.close()
@@ -312,13 +392,19 @@ def main():
         default=500_000,
         help="총 학습 스텝 수 (기본: 500000)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="환경 및 행동 선택 랜덤 시드 (기본: 미지정)",
+    )
     args = parser.parse_args()
 
     train_qlearning(
         env_id="Taxi-v3",
         conf_file=None,
         n_timesteps=args.n_timesteps,
-        seed=None,
+        seed=args.seed,
         exp_id=None,
         log_dir=None,
         verbose=1,

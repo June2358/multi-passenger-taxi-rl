@@ -1,321 +1,166 @@
-# RL 프로젝트 (RL-Zoo 기반)
+# Taxi RL 실험 프로젝트
 
-SB3 + SB3-Contrib MaskablePPO로 고수준 택시 디스패치 정책을 학습하는 프로젝트입니다.  
-커스텀 환경 `AdvancedTaxi-v0`(단일 택시 디스패치, Box 관찰)와 표준 환경 `Taxi-v3`를 대상으로 Stable-Baselines3, SB3-Contrib(MaskablePPO), RL-Zoo3, Optuna를 사용합니다.
+Gymnasium 커스텀 환경 `AdvancedTaxi-v1`과 표준 `Taxi-v3`에서 MaskablePPO, DQN, Tabular Q-Learning을 비교하는 프로젝트입니다.
 
----
+> `AdvancedTaxi-v1`은 환경 난수·승객 슬롯 누출·평가 설정 문제를 수정한 새 계약입니다. 기존 `AdvancedTaxi-v0` 모델과 로그는 새 환경의 성능 근거로 재사용할 수 없으며, 반드시 다시 학습해야 합니다.
 
-## 프로젝트 개요
+## 목적함수
 
-- **문제 정의**: 단일 택시가 여러 승객을 순차적으로 서비스하면서 **총 누적 대기시간을 최소화**하는 디스패치 정책 학습
-- **환경**:
-  - `AdvancedTaxi-v0`: 커스텀 고수준 디스패치 환경 (Discrete 승객 선택 + Action Masking)
-  - `Taxi-v3`: Gymnasium 표준 택시 환경 (DQN/Tabular Q-Learning)
-- **주요 스크립트**:
-  - `train_advanced_taxi_maskableppo.py`: AdvancedTaxi-v0 + MaskablePPO 전용 학습/Optuna
-  - `evaluate_model.py`: AdvancedTaxi-v0 평가 (랜덤/그리디/RL 총 대기시간 콘솔 요약)
-  - `train_rlzoo.py`: Taxi-v3용 RL-Zoo 래퍼(DQN/Q-Learning 등)
-  - `qlearning_train.py`: Taxi-v3 Tabular Q-Learning
-
-
----
-
-## 4단계 워크플로우 개요
-
-1. **Step 0 – 파라미터 최적화 (Optuna + SQLite)**  
-   - Optuna로 알고리즘/환경 조합별 적당한 하이퍼파라미터를 찾고 SQLite DB에 저장합니다.
-2. **Step 1 – 학습 (Training)**  
-   - 찾은 설정을 YAML에 업데이트한 후 AdvancedTaxi-v0 / Taxi-v3에 대해 본 학습을 수행합니다.
-3. **Step 2 – 평가 (Evaluate)**  
-   - AdvancedTaxi-v0에 대해 `evaluate_model.py`로 시나리오별 성능을 비교합니다.
-   - `--visualize` 옵션으로 각 정책의 이동 경로를 그리드월드에 시각화할 수 있습니다.
-4. **Step 3 – TensorBoard로 학습 차트 확인**  
-   - RL-Zoo가 남긴 로그를 TensorBoard로 열어 학습 곡선, KL, loss 등을 확인합니다.
-
-아래 섹션에서 각 Step에 해당하는 명령과 옵션을 자세히 설명합니다.
-
----
-
-## Step 0 – 파라미터 최적화 (Optuna + SQLite)
-
-이 프로젝트의 권장 플로우는 **먼저 Optuna로 하이퍼파라미터를 튜닝한 뒤**, 그 설정을 기반으로 본 학습을 돌리는 것입니다.
-
-
-### 단순 최적화 패턴
-
-다른 알고리즘/환경으로 변경하려면 다음 패턴을 사용하세요 (※ `train_rlzoo.py`는 Taxi-v3 전용):
-
-```bash
-python train_rlzoo.py --algo {ALGO} --env {ENV} -optimize --n-trials 100 --n-timesteps 200000 --study-name {STUDY_NAME} --storage sqlite:///logs/{STUDY_NAME}.db --n-jobs {N_JOBS}
-```
-
-- `{ALGO}`: 알고리즘 이름 (dqn 등 – **maskableppo는 전용 스크립트 사용**)
-- `{ENV}`: 환경 ID (현재 스크립트에서는 **Taxi-v3**만 지원)
-- `{STUDY_NAME}`: Optuna study 이름
-- `{N_JOBS}`: On-policy 알고리즘은 `1`, Off-policy 알고리즘은 `4~8` 권장
-
-### Optuna 예시 모음 (복붙 전용)
-
-#### 1. AdvancedTaxi-v0 + MaskablePPO (On-policy)
-
-```bash
-python train_advanced_taxi_maskableppo.py -optimize --n-trials 100 --n-timesteps 200000 --study-name adv_taxi_maskableppo --storage sqlite:///logs/adv_taxi_optuna.db --n-jobs 1
-```
-
-#### 2. Taxi-v3 + DQN (Off-policy)
-
-```bash
-python train_rlzoo.py --algo dqn --env Taxi-v3 -optimize --n-trials 100 --n-timesteps 200000 --study-name taxi_v3_dqn --storage sqlite:///logs/taxi_dqn_optuna.db --n-jobs 4
-```
-
-### Optuna 옵션 정리
-
-- `-optimize`: Optuna 최적화 모드 활성화
-- `--n-trials`: 시도할 trial 수 (예: 20, 100)
-- `--n-timesteps`: 각 trial의 학습 스텝 수 (예: 200000)
-- `--n-jobs`: 병렬 trial 수
-  - On-policy (MaskablePPO, A2C 등): `1` 권장 (각 trial 내에서 병렬 환경 사용)
-  - Off-policy (DQN, SAC 등): `4~8` 권장 (병렬 trial로 속도 향상)
-- `--study-name`: Optuna study 이름 (재현성을 위해 명시 권장)
-- `--storage`: Optuna storage 경로 (SQLite 권장, 예: `sqlite:///logs/study.db`)
-
----
-
-## Step 1 – 학습 (Training)
-
-> `--seed` 옵션은 선택 사항입니다. 지정하지 않으면 기본값 `42`를 사용합니다.  
-> 다른 seed를 사용하려면 `--seed <값>`을 명시적으로 지정하세요.
-
-### 하이퍼파라미터 파일 지정 규칙
-
-- `train_rlzoo.py`는 `--algo`, `--env`, `--param-mode`를 기반으로 **YAML을 자동 선택**합니다.
-- `train_advanced_taxi_maskableppo.py`는 기본으로 `hyperparameters/advanced_taxi/maskableppo.yml`을 사용합니다.
-
-자동 선택 규칙:
-
-- 환경별 폴더: `hyperparameters/{env_folder}/{algo}.yml`
-  - `AdvancedTaxi-v0` → `hyperparameters/advanced_taxi/`
-  - `Taxi-v3` → `hyperparameters/taxi_v3/`
-- `--param-mode` 옵션:
-  - `tuned` (기본값): `{algo}.yml` 사용
-  - `base`: `{algo}_base.yml` 사용
-
-**수동 지정 (`--conf-file`)**
-
-- 특정 YAML을 강제로 사용하고 싶을 때는 `--conf-file`을 사용합니다:
-
-```bash
-python train_rlzoo.py --algo dqn --env Taxi-v3 --n-timesteps 500000 \
-  --conf-file hyperparameters/taxi_v3/dqn.yml
-```
-
-**진행률 바(`tqdm`) – `-P` / `--progress`**
-
-- `-P`는 RL-Zoo3의 `--progress` 플래그로 전달되어 **tqdm 진행률 바를 켜는 역할**만 합니다.
-- YAML 로딩과는 완전히 독립입니다.
-
-```bash
-python train_rlzoo.py --algo dqn --env Taxi-v3 --n-timesteps 500000 \
-  --conf-file hyperparameters/taxi_v3/dqn.yml -P
-```
-
-### Step 1-1. AdvancedTaxi-v0 학습 (MaskablePPO 전용)
-
-기본 학습 (자동 하이퍼파라미터 선택, seed 기본값 42):
-
-```bash
-python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 -P
-```
-
-- RL-Zoo 기본 구조 사용: `logs/{algo}/{env_id}_{exp}/...`
-
-환경 파라미터 오버라이드:
-
-```bash
-python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 -P \
-  --env-kwargs num_passengers:30 grid_size:120 scenario_mode:mixed
-```
-
-- `--device` 미지정 시 CPU 기본
-- MaskablePPO는 `sb3-contrib` 필요 (이미 `pixi.toml`에 포함)
-
-### Step 1-2. Taxi-v3 학습 (DQN)
-
-DQN 학습:
-
-```bash
-python train_rlzoo.py --algo dqn --env Taxi-v3 --n-timesteps 500000 -P
-```
-
-- Taxi-v3 관찰: 기본은 `Discrete(500)` 원형  
-  필요 시 YAML에서 wrapper를 설정해 one-hot/decoded 관찰을 사용할 수 있습니다.
-
-### Step 1-3. Taxi-v3 Tabular Q-Learning
-
-```bash
-python qlearning_train.py --n-timesteps 500000
-```
-
-- 인자는 타임스텝만 필요합니다.
-- 하이퍼파라미터는 `hyperparameters/taxi_v3/qlearning*.yml`에서 자동 로드됩니다.
-
----
-
-## Step 2 – 평가 (Evaluate)
-
-### AdvancedTaxi-v0 평가 (`evaluate_model.py`)
-
-`evaluate_model.py`는 **`AdvancedTaxi-v0` + `maskableppo` 조합을 고정**으로 사용해  
-`logs/`에서 최신 실험을 자동으로 찾아 시나리오별 성능을 평가합니다.
-
-#### 기본 평가 (텍스트 요약)
-
-아무 인자도 넘기지 않으면, random/cluster/complex 시나리오에 대해  
-Random, Greedy, RL 정책의 총 대기시간 지표를 콘솔에 출력합니다:
-
-```bash
-python evaluate_model.py
-```
-
-출력 예시:
-```
-=== 성과 지표 (총 대기시간: 낮을수록 좋음, seed=1~100 평균) ===
-
-Scenario   | Policy   |         Mean |          Std
-----------------------------------------------------
-random     | random   |     12345.67 |      1234.56
-random     | greedy   |      9876.54 |       987.65
-random     | RL       |      8765.43 |       876.54
-----------------------------------------------------
-...
-```
-
-#### 시각화 기능
-
-`--visualize` 옵션을 사용하면 각 정책의 이동 경로를 그리드월드에 시각화합니다:
-
-```bash
-python evaluate_model.py --visualize
-```
-
-**시각화 내용:**
-- **승객 출발지** (녹색 원, 번호 표시)
-- **승객 목적지** (빨간색 사각형, 번호 표시)
-- **빈차 이동 경로** (실선, 두껍게, 강조) - 최적화의 핵심
-- **승객 운행 경로** (점선, 얇게) - 어쩔 수 없는 부분
-- **택시 시작 위치** (파란색 다이아몬드)
-- **택시 종료 위치** (보라색 다이아몬드)
-
-**시각화 옵션:**
-- `--visualize`: 시각화 생성 (기본: False)
-- `--visualize-seed`: 시각화에 사용할 시드 (기본: 1)
-- `--output-dir`: 시각화 저장 디렉터리 (기본: `visualizations/`)
-- `--num-passengers`: 승객 수 (기본: 20)
-- `--grid-size`: 그리드 크기 (기본: 100)
-
-**예시:**
-```bash
-# 기본 시각화 (seed=1)
-python evaluate_model.py --visualize
-```
-
-**출력 파일:**
-각 시나리오(random, cluster, complex)와 정책(random, greedy, rl) 조합별로 PNG 파일이 생성됩니다:
-- `visualizations/random_random_seed1.png`
-- `visualizations/random_greedy_seed1.png`
-- `visualizations/random_rl_seed1.png`
-- `visualizations/cluster_random_seed1.png`
-- ... (총 9개 파일)
-
-시각화를 통해 각 정책이 얼마나 효율적으로 승객을 배차하는지 시각적으로 비교할 수 있습니다.
-
----
-
-## Step 3 – TensorBoard로 학습 차트 확인
-
-### TensorBoard 사용법
-
-기본 실행 (RL-Zoo 기본 경로 기준):
-
-```bash
-tensorboard --logdir logs/
-```
-
-경로 안내 (RL-Zoo 기본 정책):
-
-- 모델/모니터/평가 결과: `logs/{algo}/{env_id}_{exp_id}/...`  
-  예: `logs/maskableppo/AdvancedTaxi-v0_1/`
-- TensorBoard 이벤트: `logs/{env_id}/{algo}_{exp_id}/...`  
-  예: `logs/AdvancedTaxi-v0/MaskablePPO_1/`
-- 두 경로를 맞추고 싶다면 `--tensorboard-log`를 명시적으로 `logs/{algo}/{env_id}_{exp_id}` 형태로 지정하세요.
-
-### 주요 메트릭
-
-- `rollout/ep_rew_mean`: 에피소드 평균 누적 보상
-- `rollout/ep_len_mean`: 에피소드 평균 길이
-- `train/value_loss`: 가치 함수 손실
-- `train/policy_gradient_loss`: 정책 경사 손실
-- `train/approx_kl`: KL 발산 근사값
-- `train/clip_fraction`: 클리핑 비율
-
----
-
-## AdvancedTaxi-v0 환경·아키텍처 개요
-
-### 사용 가능한 환경
-
-- `AdvancedTaxi-v0` (커스텀, MaskablePPO 권장)
-- `Taxi-v3` (표준 Gymnasium, DQN/Tabular Q-Learning 지원)
-
-### 커스텀 환경 요약 (`AdvancedTaxi-v0`)
-
-- 클래스: `envs.envs.AdvancedTimeAttackTaxiEnv`
-- 행동 공간: `Discrete(num_passengers)` (승객 인덱스 선택), Action Masking 필수 (`env.action_masks()`)
-- 관찰 공간: `Box(shape=(num_passengers*6,), dtype=float32)`  
-  - 승객별 `[rel_x, rel_y, dest_dx, dest_dy, status, dist]` (정규화 스케일 100)  
-  - 현재 구현은 승객 생성 순서를 유지합니다.
-- 보상: `reward = -(time_elapsed * remaining_passengers) / 100.0`  
-  - `time_elapsed = dist_empty + dist_service`
-  - 시스템 수준 KPI인 총 누적 대기시간을 근사하도록 설계
-- 시나리오: `random` / `cluster` / `complex`, `mixed`는 (0.3, 0.4, 0.3) 비율로 무작위 선택
-- 기본 env_kwargs: `num_passengers=20`, `grid_size=100`, `scenario_mode="mixed"`, `start_at_center=False`
-
-학습·시연 간 일관성을 위해, **동일한 환경 ID(`AdvancedTaxi-v0`)와 동일한 env_kwargs**를 사용하는 것을 권장합니다.
-
-### 실제 프로젝트 구조
+`AdvancedTaxi-v1`은 승객을 한 명 선택할 때 다음 비용을 부과합니다.
 
 ```text
-RL/
-├── train_rlzoo.py                    # Taxi-v3 등 표준 환경 학습 (dqn/qlearning)
-├── train_advanced_taxi_maskableppo.py  # AdvancedTaxi-v0 전용 MaskablePPO 학습/Optuna
-├── qlearning_train.py                # Taxi-v3용 Tabular Q-Learning
-├── evaluate_model.py                 # AdvancedTaxi-v0 평가 스크립트 (텍스트 요약 + 시각화)
-├── envs/                             # 환경 패키지
-│   ├── __init__.py                  # AdvancedTaxi-v0 등록, wrappers export
-│   ├── envs.py                      # AdvancedTimeAttackTaxiEnv 정의
-│   └── wrappers.py                  # Taxi-v3 one-hot/decoded, AdvancedTaxi ActionMasker
-├── hyperparameters/                  # RL-Zoo YAML (환경별 디렉터리)
-│   ├── advanced_taxi/
-│   │   └── maskableppo.yml
-│   └── taxi_v3/                     # dqn/qlearning 등 base·tuned 모음
-├── logs/                             # RL-Zoo가 생성하는 실험 결과 및 TensorBoard 로그
-├── visualizations/                   # evaluate_model.py --visualize로 생성된 경로 시각화 이미지
-├── pixi.toml / pixi.lock             # 의존성 및 실행 환경 관리(pixi 기반)
-└── ...
+step_cost = 현재 남은 승객 수 × (빈차 이동거리 + 승객 운행거리)
+reward = -step_cost / 100
 ```
 
----
+에피소드 비용의 합은 픽업 대기시간이 아니라 **모든 승객의 완료시간 합**(sum of passenger completion times, total flow time)입니다. 서비스 거리의 합은 순서와 무관하므로 픽업 대기시간을 최소화하는 순서와 최적 순서는 같지만, 절대 지표의 정확한 명칭은 “총 완료시간 합”입니다.
 
-## Optuna 결과 고급 분석 (Appendix)
+## 환경 계약
 
-### Optuna Dashboard 사용 (권장)
+- 행동: `Discrete(num_passengers)`, 아직 처리하지 않은 승객 인덱스 선택
+- 관찰: 승객당 `[상대 x, 상대 y, 목적지 dx, 목적지 dy, 처리 상태, 빈차 거리]` 6개 특징
+- 시나리오: `random`, `cluster`, `complex`, 또는 이들을 섞는 `mixed`
+- 기본값: 승객 20명, 100×100 그리드, 랜덤 택시 시작점
+- 모든 난수는 Gymnasium의 환경별 `self.np_random`을 사용
+- 모든 시나리오에서 승객 슬롯을 에피소드마다 섞어 `complex`의 trap/honey 유형이 고정 인덱스로 노출되지 않음
+- 환경 자체의 `action_masks()`를 사용하므로 별도 ActionMasker 호환 래퍼가 필요하지 않음
+- 음수·범위 밖·이미 처리한 행동은 환경이 즉시 거부
+- 처리된 승객의 원본 좌표는 보존하고 관찰에서만 완료 특징을 0으로 정리
+- 같은 seed의 중앙 출발 OOD 평가는 승객 집합을 그대로 유지하고 택시 시작점만 변경
+- 에피소드 길이는 승객 수와 같으므로 별도의 고정 `TimeLimit`을 두지 않음
+
+`step()`의 `info["completion_cost"]`에는 단계별 완료시간 비용이 제공됩니다. 평가기는 비용을 다시 계산하지 않고 이 값을 단일 기준으로 사용합니다.
+
+## 설치와 테스트
 
 ```bash
-optuna-dashboard sqlite:///logs/adv_taxi_optuna.db
+pixi install
+pixi run test
 ```
 
-또는 상대 경로 사용:
+`test` task는 전체 `unittest` 회귀 테스트를 실행합니다.
+
+## AdvancedTaxi-v1 학습
+
+누출이 제거된 환경에서는 과거 tuned 설정을 폐기했습니다. 기본 모드는 현재의 보수적인 baseline 설정인 `hyperparameters/advanced_taxi/maskableppo_base.yml`입니다.
 
 ```bash
-optuna-dashboard logs/adv_taxi_optuna.db
+pixi run python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 --seed 42 -P
 ```
+
+Optuna 탐색:
+
+```bash
+pixi run python train_advanced_taxi_maskableppo.py -optimize --n-trials 100 --n-timesteps 200000 --study-name adv_taxi_v1_maskableppo --storage sqlite:///logs/adv_taxi_v1_optuna.db --n-jobs 1
+```
+
+환경 오버라이드:
+
+```bash
+pixi run python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 --env-kwargs num_passengers:30 grid_size:120 scenario_mode:mixed
+```
+
+학습 환경의 승객 수·그리드·시나리오 설정은 평가 환경에도 전달됩니다. 평가 전용 값은 `--eval-env-kwargs`로 다시 지정할 수 있으며, 기본적으로 평가 시 분포 노이즈만 `0.0`으로 고정됩니다.
+
+```bash
+pixi run python train_advanced_taxi_maskableppo.py --env-kwargs num_passengers:30 --eval-env-kwargs start_at_center:True
+```
+
+- 기본 seed는 `42`입니다.
+- `--param-mode base`가 기본입니다.
+- 누출 환경에서 얻은 과거 tuned 모드는 제거했으며 현재는 `base`만 허용합니다.
+- 실행 경로와 평가 대상을 모호하게 만드는 `--uuid` 및 학습용 `--exp-id`는 지원하지 않습니다.
+- 사용자 `--conf-file`을 지정하면 자동 설정 선택 대신 그 파일만 사용합니다.
+
+## Taxi-v3 기준선
+
+DQN baseline:
+
+```bash
+pixi run python train_rlzoo.py --algo dqn --env Taxi-v3 --param-mode base --n-timesteps 500000 --seed 42 -P
+```
+
+`dqn_base.yml`은 현재 고정된 SB3 2.7.1의 기본 `learning_starts=100`, `[64, 64]` 네트워크를 사용합니다.
+
+Tabular Q-Learning baseline:
+
+```bash
+pixi run python train_rlzoo.py --algo qlearning --env Taxi-v3 --param-mode base --n-timesteps 500000 --seed 42
+```
+
+직접 실행하면 `qlearning.yml`을 사용합니다.
+
+```bash
+pixi run python qlearning_train.py --n-timesteps 500000 --seed 42
+```
+
+Q-Learning은 termination에서만 bootstrap을 중단하고 truncation에서는 계속 bootstrap합니다. 탐욕 행동의 Q값이 같을 때는 무작위로 동률을 해소하며, 최종 평가는 학습과 독립적으로 파생한 seed와 RNG를 사용합니다. `seed`를 생략하면 비결정적으로 실행됩니다.
+
+## AdvancedTaxi-v1 평가
+
+평가할 실행 ID를 반드시 지정합니다.
+
+```bash
+pixi run python evaluate_model.py --exp-id 1
+```
+
+평가기의 기본 계약은 다음과 같습니다.
+
+- 정확히 `logs/maskableppo/AdvancedTaxi-v1_<exp-id>/AdvancedTaxi-v1.zip` 최종 모델을 사용
+- `config.yml`, `args.yml`, `vecnormalize.pkl`은 실행 폴더 아래의 `AdvancedTaxi-v1/` 디렉터리에서만 로드
+- 정규화 실행인데 통계가 없으면 원시 관찰로 계속하지 않고 즉시 실패
+- 저장된 전체 `eval_env_kwargs`를 복원하며, 누락된 과거 형식은 현재 기본값으로 추측하지 않고 재학습을 요구
+- Random, nearest-pickup Greedy, RL에 동일한 seed의 동일 승객 인스턴스를 사용
+- Random 정책 RNG는 문제 생성 RNG와 분리
+- 기본 테스트 seed는 학습 기본 seed와 분리된 `10000~10099`
+- 결과 비용은 환경의 `info["completion_cost"]`만 합산
+
+중앙 출발 OOD 비교:
+
+```bash
+pixi run python evaluate_model.py --exp-id 1 --center-start
+```
+
+seed 범위와 평가 개수 변경:
+
+```bash
+pixi run python evaluate_model.py --exp-id 1 --seed-start 20000 --num-seeds 200
+```
+
+경로 시각화:
+
+```bash
+pixi run python evaluate_model.py --exp-id 1 --visualize --visualize-seed 10000
+```
+
+PNG는 기본적으로 `visualizations/`에 저장됩니다.
+
+## 출력 구조
+
+```text
+logs/
+└── maskableppo/
+    └── AdvancedTaxi-v1_1/
+        ├── AdvancedTaxi-v1.zip
+        ├── best_model.zip
+        ├── evaluations.npz
+        └── AdvancedTaxi-v1/
+            ├── args.yml
+            ├── config.yml
+            └── vecnormalize.pkl
+```
+
+평가기에서는 최종 모델만 지원합니다. `best_model.zip`은 저장 시점과 동일한 VecNormalize 통계를 별도로 보존하는 구조가 마련되기 전까지 선택하지 않습니다.
+
+TensorBoard:
+
+```bash
+pixi run tensorboard --logdir logs/
+```
+
+## 현재 해석상의 한계
+
+- `complex`의 trap은 실제 수요 데이터가 아니라 의도적으로 만든 합성 스트레스 시나리오입니다.
+- 에피소드별 shuffle은 고정 슬롯 누출을 제거하지만, 현재 평면 MLP 자체가 순열 등가적인 set policy라는 뜻은 아닙니다.
+- 현재 평가 기준선은 Random과 nearest-pickup Greedy입니다. 최적성 주장을 하려면 작은 문제의 exact DP, beam/local search 등 더 강한 조합최적화 기준선이 필요합니다.
+- 정량 결과는 학습 seed 하나로 결론 내리지 말고 여러 독립 학습 실행의 평균과 분산을 함께 보고해야 합니다.

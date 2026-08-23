@@ -12,23 +12,20 @@ from gymnasium.envs.registration import register
 
 # AdvancedTimeAttackTaxiEnv 등록
 register(
-    id="AdvancedTaxi-v0",
+    id="AdvancedTaxi-v1",
     entry_point="envs.envs:AdvancedTimeAttackTaxiEnv",
-    max_episode_steps=1000,
 )
 
 # Wrapper와 환경 클래스 export
 from envs.wrappers import (
     TaxiOneHotObservationWrapper,
     TaxiDecodedObservationWrapper,
-    AdvancedTaxiActionMasker,
 )
 from envs.envs import AdvancedTimeAttackTaxiEnv
 
 __all__ = [
     "TaxiOneHotObservationWrapper",
     "TaxiDecodedObservationWrapper",
-    "AdvancedTaxiActionMasker",
     "AdvancedTimeAttackTaxiEnv",
 ]
 

@@ -1,37 +1,8 @@
-"""Taxi-v3 래퍼 (원핫/decoded 관찰 + AdvancedTaxi ActionMasker)."""
+"""Taxi-v3 관찰 래퍼."""
 
 import numpy as np
 from gymnasium import ObservationWrapper
 from gymnasium.spaces import Box
-
-# ActionMasker wrapper for RL-Zoo compatibility
-try:
-    from sb3_contrib.common.wrappers import ActionMasker
-except ImportError:
-    ActionMasker = None
-
-
-class AdvancedTaxiActionMasker(ActionMasker if ActionMasker else object):
-    """
-    AdvancedTaxi-v0 환경을 위한 ActionMasker wrapper.
-    RL-Zoo YAML에서 사용할 수 있도록 action_mask_fn을 자동으로 설정합니다.
-    """
-    
-    def __init__(self, env):
-        if ActionMasker is None:
-            raise ImportError("sb3-contrib is required for ActionMasker. Install with: pip install sb3-contrib")
-        
-        # ActionMasker를 action_masks() 메서드로 래핑
-        # unwrapped를 사용하여 Monitor 등의 wrapper를 통과하여 실제 환경의 action_masks() 호출
-        def action_mask_fn(e):
-            # unwrapped를 사용하여 실제 환경에 접근
-            unwrapped_env = getattr(e, 'unwrapped', e)
-            # env 속성을 통해 더 깊이 들어가기 (Monitor -> 실제 환경)
-            while hasattr(unwrapped_env, 'env') and unwrapped_env.env != unwrapped_env:
-                unwrapped_env = unwrapped_env.env
-            return unwrapped_env.action_masks()
-        
-        super().__init__(env, action_mask_fn)
 
 
 class TaxiOneHotObservationWrapper(ObservationWrapper):
