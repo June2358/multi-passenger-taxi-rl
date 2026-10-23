@@ -20,7 +20,8 @@ from __future__ import annotations
 import argparse
 import inspect
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import batched
 from pathlib import Path
 from typing import Any
 
@@ -132,14 +133,7 @@ def resolve_run_artifacts(
         )
 
     if not uses_normalization:
-        return RunArtifacts(
-            run_dir=artifacts.run_dir,
-            checkpoint=artifacts.checkpoint,
-            model=artifacts.model,
-            vecnormalize=None,
-            config=artifacts.config,
-            args=artifacts.args,
-        )
+        return replace(artifacts, vecnormalize=None)
     return artifacts
 
 
@@ -389,15 +383,14 @@ def _run_rl_seeds_batched(
     vecnormalize_path: Path | None,
     seeds: Sequence[int],
 ) -> list[float]:
-    seed_values = list(seeds)
     costs: list[float] = []
-    for offset in range(0, len(seed_values), RL_EVALUATION_BATCH_SIZE):
+    for batch_seeds in batched(list(seeds), RL_EVALUATION_BATCH_SIZE):
         costs.extend(
             _run_rl_batch(
                 model,
                 env_kwargs,
                 vecnormalize_path,
-                seed_values[offset : offset + RL_EVALUATION_BATCH_SIZE],
+                batch_seeds,
             )
         )
     return costs
@@ -532,13 +525,11 @@ def _save_evaluation_artifact(
     ddof = 1 if costs.shape[-1] > 1 else 0
     np.savez_compressed(
         path,
-        checkpoint=np.asarray(checkpoint),
-        env_kwargs_yaml=np.asarray(
-            yaml.safe_dump(dict(env_kwargs), sort_keys=True, allow_unicode=True)
-        ),
-        scenarios=np.asarray(SCENARIOS),
-        policies=np.asarray(POLICIES),
-        baseline_policies=np.asarray(BASELINE_POLICIES),
+        checkpoint=checkpoint,
+        env_kwargs_yaml=yaml.safe_dump(dict(env_kwargs), sort_keys=True, allow_unicode=True),
+        scenarios=SCENARIOS,
+        policies=POLICIES,
+        baseline_policies=BASELINE_POLICIES,
         seeds=np.asarray(seeds, dtype=np.int64),
         costs=costs,
         mean_costs=costs.mean(axis=2),

@@ -125,7 +125,7 @@ class FixedScenarioEvalCallback(BaseCallback):
         np.savez_compressed(
             self.save_dir / "evaluations.npz",
             timesteps=np.asarray(self.evaluation_timesteps, dtype=np.int64),
-            scenarios=np.asarray(VALIDATION_SCENARIOS),
+            scenarios=VALIDATION_SCENARIOS,
             validation_seeds=self.validation_seeds,
             results=np.asarray(self.evaluation_results, dtype=np.float64),
         )
