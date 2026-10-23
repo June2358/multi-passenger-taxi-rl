@@ -109,14 +109,8 @@ if __name__ == "__main__":
         and known_args.algo
         and known_args.n_jobs is None
     ):
-        on_policy_algos = {"ppo", "a2c", "trpo", "ppo_lstm"}
         off_policy_algos = {"dqn", "qrdqn", "sac", "td3", "ddpg", "tqc", "crossq"}
-        if known_args.algo.lower() in on_policy_algos:
-            recommended_n_jobs = 1
-        elif known_args.algo.lower() in off_policy_algos:
-            recommended_n_jobs = 8
-        else:
-            recommended_n_jobs = 1
+        recommended_n_jobs = 8 if known_args.algo.lower() in off_policy_algos else 1
         injected_args.extend(["--n-jobs", str(recommended_n_jobs)])
 
     # 하이퍼파라미터 파일 자동 선택

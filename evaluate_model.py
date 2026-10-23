@@ -38,6 +38,7 @@ from sb3_contrib.common.maskable.utils import get_action_masks
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from envs.envs import AdvancedTimeAttackTaxiEnv
+from envs.utils import compute_manhattan_distance, compute_trip_time
 
 ROOT = Path(__file__).resolve().parent
 
@@ -246,12 +247,11 @@ def _run_greedy(
         available = np.flatnonzero(np.asarray(env.action_masks(), dtype=bool))
         if available.size == 0:
             raise RuntimeError("선택 가능한 승객이 없습니다.")
-        taxi = np.asarray(env.taxi_loc)
         return int(
             min(
                 available,
                 key=lambda index: (
-                    int(np.abs(taxi - np.asarray(env.passengers[int(index)][:2])).sum()),
+                    compute_manhattan_distance(env.taxi_loc, env.passengers[int(index)][:2]),
                     int(index),
                 ),
             )
@@ -271,13 +271,9 @@ def _run_shortest_trip(
         available = np.flatnonzero(np.asarray(env.action_masks(), dtype=bool))
         if available.size == 0:
             raise RuntimeError("선택 가능한 승객이 없습니다.")
-        taxi = np.asarray(env.taxi_loc)
 
         def total_trip(index: int) -> tuple[int, int]:
-            passenger = np.asarray(env.passengers[index])
-            pickup_distance = int(np.abs(taxi - passenger[:2]).sum())
-            service_distance = int(np.abs(passenger[:2] - passenger[2:4]).sum())
-            return pickup_distance + service_distance, index
+            return sum(compute_trip_time(env.taxi_loc, env.passengers[index])), index
 
         return int(min((int(index) for index in available), key=total_trip))
 
