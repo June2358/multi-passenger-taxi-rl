@@ -68,7 +68,7 @@ def _load_mapping(path: Path) -> dict[str, Any]:
 
 
 def _uses_vecnormalize(value: Any) -> bool:
-    """Return whether the saved training configuration enabled VecNormalize."""
+    """저장된 학습 설정에서 VecNormalize 사용 여부를 반환한다."""
     if isinstance(value, dict):
         return True
     if isinstance(value, bool):
@@ -83,7 +83,7 @@ def resolve_run_artifacts(
     exp_id: int,
     checkpoint: str,
 ) -> RunArtifacts:
-    """Resolve one explicit checkpoint and its paired normalization state."""
+    """명시한 checkpoint와 짝을 이루는 정규화 상태를 찾는다."""
     if exp_id < 1:
         raise ValueError("exp_id는 1 이상이어야 합니다.")
     if checkpoint not in {"final", "best"}:
@@ -110,7 +110,7 @@ def resolve_run_artifacts(
         raise FileNotFoundError(f"run을 찾을 수 없습니다: {artifacts.run_dir}")
 
     for label, path in {
-        "selected model": artifacts.model,
+        "선택한 모델": artifacts.model,
         "config": artifacts.config,
         "args": artifacts.args,
     }.items():
@@ -143,7 +143,7 @@ def resolve_run_artifacts(
 
 
 def load_evaluation_env_kwargs(artifacts: RunArtifacts) -> dict[str, Any]:
-    """Load the complete evaluation environment contract saved by training."""
+    """학습에서 저장한 평가 환경 계약 전체를 읽는다."""
     saved_args = _load_mapping(artifacts.args)
     if saved_args.get("algo") != ALGO or saved_args.get("env") != ENV_ID:
         raise ValueError(
@@ -265,7 +265,7 @@ def _run_shortest_trip(
     seed: int,
     track_path: bool = False,
 ) -> tuple[float, dict[str, Any] | None]:
-    """Choose the passenger with the shortest pickup plus service trip."""
+    """픽업과 운행 거리의 합이 가장 짧은 승객을 선택한다."""
 
     def select_action(env: AdvancedTimeAttackTaxiEnv) -> int:
         available = np.flatnonzero(np.asarray(env.action_masks(), dtype=bool))
@@ -285,7 +285,7 @@ def _run_shortest_trip(
 
 
 class _RLEpisodeRunner:
-    """Run one RL episode while collecting visualization data."""
+    """시각화 데이터를 수집하며 RL 에피소드 하나를 실행한다."""
 
     def __init__(
         self,
@@ -336,7 +336,7 @@ def _run_rl_batch(
     vecnormalize_path: Path | None,
     seeds: Sequence[int],
 ) -> list[float]:
-    """Evaluate contiguous seeds together without changing episode semantics."""
+    """에피소드 의미를 유지하면서 연속 seed를 묶어 평가한다."""
     seed_values = [int(seed) for seed in seeds]
     if not seed_values:
         return []
@@ -416,7 +416,7 @@ def visualize_path(
     seed: int,
     output_dir: Path | None = None,
 ) -> None:
-    """Save a schematic of the recorded taxi movement segments."""
+    """기록된 택시 이동 구간의 개략도를 저장한다."""
     _, ax = plt.subplots(figsize=(12, 12))
     ax.set_xlim(0, grid_size)
     ax.set_ylim(0, grid_size)
@@ -430,10 +430,10 @@ def visualize_path(
         origin = [p[0], p[1]]
         dest = [p[2], p[3]]
         ax.scatter(origin[0], origin[1], c="green", s=150, marker="o", alpha=0.7, zorder=5, edgecolors="black", linewidths=1)
-        ax.text(origin[0], origin[1], str(i), fontsize=9, ha="center", va="center", 
+        ax.text(origin[0], origin[1], str(i), fontsize=9, ha="center", va="center",
                 fontweight="bold", color="white", zorder=6)
         ax.scatter(dest[0], dest[1], c="red", s=150, marker="s", alpha=0.7, zorder=5, edgecolors="black", linewidths=1)
-        ax.text(dest[0], dest[1], str(i), fontsize=9, ha="center", va="center", 
+        ax.text(dest[0], dest[1], str(i), fontsize=9, ha="center", va="center",
                 fontweight="bold", color="white", zorder=6)
         ax.plot([origin[0], dest[0]], [origin[1], dest[1]], "k--", alpha=0.2, linewidth=1, zorder=1)
 
@@ -505,7 +505,7 @@ def visualize_path(
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = target_dir / f"{scenario}_{policy}_seed{seed}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
-    print(f"[INFO] 시각화 저장: {filename}")
+    print(f"[정보] 시각화 저장: {filename}")
 
     plt.close()
 
@@ -745,11 +745,11 @@ def main() -> None:
         env_kwargs["start_at_center"] = True
         evaluation_mode = "random/cluster 중앙 출발 OOD"
 
-    print(f"[INFO] 모델 로드: {artifacts.model}")
+    print(f"[정보] 모델 로드: {artifacts.model}")
     if artifacts.vecnormalize:
-        print(f"[INFO] VecNormalize 로드: {artifacts.vecnormalize}")
-    print(f"[INFO] 평가 모드: {evaluation_mode}")
-    print(f"[INFO] 저장된 평가 환경 설정 복원: {env_kwargs}")
+        print(f"[정보] VecNormalize 로드: {artifacts.vecnormalize}")
+    print(f"[정보] 평가 모드: {evaluation_mode}")
+    print(f"[정보] 저장된 평가 환경 설정 복원: {env_kwargs}")
 
     model = MaskablePPO.load(str(artifacts.model), device="cpu")
     _validate_model_spaces(model, env_kwargs)
@@ -788,7 +788,7 @@ def main() -> None:
         visualize_seed=args.visualize_seed,
         output_dir=output_dir,
     )
-    print(f"[INFO] 평가 산출물 저장: {results_path}")
+    print(f"[정보] 평가 산출물 저장: {results_path}")
 
     print(
         "\n=== 성과 지표 "
@@ -809,7 +809,7 @@ def main() -> None:
             print(f"{scenario:<10} | {policy:<13} | {mean:12.2f} | {std:12.2f}")
         print(sep)
 
-    print("\n=== Paired RL savings (baseline - RL; 양수면 RL 우수) ===\n")
+    print("\n=== 짝지은 RL 절감량 (baseline - RL; 양수면 RL 우수) ===\n")
     paired_header = (
         f"{'Scenario':<10} | {'Baseline':<13} | {'Mean saving':>12} | "
         f"{'SE':>10} | {'Win rate':>10}"

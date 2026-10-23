@@ -1,0 +1,21 @@
+[project]
+name = "multi-passenger-taxi-rl"
+version = "0.1.0"
+description = "다중 승객 Taxi 강화학습 실험과 평가"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "numpy==2.5.4",
+    "gymnasium==1.4.0",
+    "matplotlib==3.11.2",
+    "torch==2.14.1",
+    "pyyaml==6.0.3",
+    "optuna==4.9.0",
+    "stable-baselines3==2.9.0",
+    "sb3-contrib==2.9.0",
+    "rl-zoo3==2.9.1",
+    "tensorboard==2.21.0",
+]
+
+[tool.uv]
+package = false

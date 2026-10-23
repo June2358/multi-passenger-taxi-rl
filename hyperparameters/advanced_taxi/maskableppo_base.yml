@@ -1,4 +1,4 @@
-# Conservative MaskablePPO baseline for AdvancedTaxi-v2.
+# AdvancedTaxi-v2의 보수적인 MaskablePPO 기준선.
 
 policy: MlpPolicy
 n_timesteps: 1000000

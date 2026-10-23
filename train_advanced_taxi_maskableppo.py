@@ -1,4 +1,4 @@
-"""Train MaskablePPO on AdvancedTaxi-v2 using public SB3 APIs only."""
+"""SB3 공개 API로 AdvancedTaxi-v2에서 MaskablePPO를 학습한다."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ _ACTIVATION_FUNCTIONS = {
 
 
 class FixedScenarioEvalCallback(BaseCallback):
-    """Select the best model on the same fixed seeds for every scenario."""
+    """모든 시나리오에서 동일한 고정 seed로 최선 모델을 선택한다."""
 
     def __init__(
         self,
@@ -156,7 +156,7 @@ class FixedScenarioEvalCallback(BaseCallback):
 
         if self.verbose > 0:
             print(
-                f"Validation num_timesteps={self.num_timesteps}, "
+                f"검증 num_timesteps={self.num_timesteps}, "
                 f"scenario_macro_mean_reward={mean_reward:.2f}"
             )
 
@@ -252,7 +252,7 @@ def _resolve_policy_kwargs(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def load_training_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Load and validate safe YAML, returning saved and runtime forms."""
+    """안전한 YAML을 읽고 검증해 저장용·실행용 형식을 반환한다."""
     config = _load_mapping(path)
     _reject_unknown_keys(config, _TOP_LEVEL_CONFIG_KEYS, "설정")
 
@@ -324,7 +324,7 @@ def parse_env_kwargs(
     defaults: Mapping[str, Any],
     groups: Sequence[Sequence[str]] | None,
 ) -> dict[str, Any]:
-    """Merge ``key:value`` CLI groups and reject unknown environment keys."""
+    """``key:value`` CLI 묶음을 병합하고 알 수 없는 환경 키를 거부한다."""
     merged = dict(defaults)
     for group in groups or ():
         for token in group:
@@ -589,7 +589,7 @@ def train(args: argparse.Namespace) -> Path:
         if train_env is not None:
             train_env.close()
 
-    print(f"[INFO] 학습 완료: {run_dir}")
+    print(f"[정보] 학습 완료: {run_dir}")
     return run_dir
 
 

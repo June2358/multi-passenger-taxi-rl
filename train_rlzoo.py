@@ -13,12 +13,10 @@ ROOT = Path(__file__).resolve().parent
 
 
 def parse_wrapper_args(argv: list[str]) -> tuple[argparse.Namespace, argparse.Namespace, list[str]]:
-    """Parse local options separately and inspect the remaining RL-Zoo options.
+    """로컬 옵션을 분리해 파싱하고 나머지 RL-Zoo 옵션을 확인한다.
 
-    ``--param-mode`` belongs to this wrapper and must not be forwarded to
-    RL-Zoo's training parser.  All other arguments remain in their original
-    form and order.
-    """
+    ``--param-mode``는 이 래퍼의 옵션이므로 RL-Zoo에 전달하지 않는다.
+    나머지 인자는 원래 형식과 순서를 유지한다."""
     local_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     local_parser.add_argument("--param-mode", choices=["tuned", "base"], default="tuned")
     local_args, rl_zoo_args = local_parser.parse_known_args(argv)
@@ -41,10 +39,10 @@ def parse_wrapper_args(argv: list[str]) -> tuple[argparse.Namespace, argparse.Na
 
 
 def parse_qlearning_args(argv: list[str]) -> argparse.Namespace:
-    """Parse the complete supported Q-Learning CLI without ignoring options."""
+    """옵션을 무시하지 않고 지원하는 Q-Learning CLI 전체를 파싱한다."""
     parser = argparse.ArgumentParser(
         prog="train_rlzoo.py",
-        description="Tabular Q-Learning (Taxi-v4 only)",
+        description="Tabular Q-Learning (Taxi-v4 전용)",
         allow_abbrev=False,
     )
     parser.add_argument("--algo", required=True, choices=["qlearning"])
@@ -56,9 +54,9 @@ def parse_qlearning_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--log-folder", "-f")
     args = parser.parse_args(argv)
     if args.n_timesteps < 1:
-        parser.error("--n-timesteps must be at least 1")
+        parser.error("--n-timesteps는 1 이상이어야 합니다.")
     if args.seed is not None and args.seed < 0:
-        parser.error("--seed must be non-negative")
+        parser.error("--seed는 0 이상이어야 합니다.")
     return args
 
 
@@ -96,14 +94,14 @@ if __name__ == "__main__":
     if not is_qlearning and known_args.tensorboard_log is None:
         tb_root = ROOT / "logs"
         injected_args.extend(["--tensorboard-log", str(tb_root)])
-        print(f"[INFO] TensorBoard 로그 기본 경로 설정: {tb_root}")
+        print(f"[정보] TensorBoard 로그 기본 경로 설정: {tb_root}")
 
     # MaskablePPO는 전용 스크립트 사용
     if known_args.algo == "maskableppo":
-        print("[ERROR] maskableppo는 전용 스크립트 사용: train_advanced_taxi_maskableppo.py")
+        print("[오류] maskableppo는 전용 스크립트 사용: train_advanced_taxi_maskableppo.py")
         sys.exit(1)
     if known_args.env is not None and known_args.env != "Taxi-v4":
-        print("[ERROR] 이 스크립트는 Taxi-v4 전용입니다.")
+        print("[오류] 이 스크립트는 Taxi-v4 전용입니다.")
         sys.exit(1)
     # Optimize 모드 기본 n_jobs 추천 (이미 지정된 경우 중복 추가 방지)
     if (
@@ -137,14 +135,14 @@ if __name__ == "__main__":
                 HYPERPARAMS_DIR,
             )
         except ValueError as exc:
-            print(f"[ERROR] {exc}")
+            print(f"[오류] {exc}")
             sys.exit(1)
         if auto_conf.exists():
             if not is_qlearning:
                 injected_args.extend(["--conf-file", str(auto_conf)])
-            print(f"[INFO] 하이퍼파라미터 파일: {auto_conf.relative_to(ROOT)} (mode: {local_args.param_mode})")
+            print(f"[정보] 하이퍼파라미터 파일: {auto_conf.relative_to(ROOT)} (mode: {local_args.param_mode})")
         else:
-            print(f"[ERROR] 하이퍼파라미터 파일을 찾을 수 없습니다: {auto_conf}")
+            print(f"[오류] 하이퍼파라미터 파일을 찾을 수 없습니다: {auto_conf}")
             print("지원 환경: Taxi-v4")
             print("입력 예: --algo dqn --env Taxi-v4")
             sys.exit(1)
@@ -157,7 +155,7 @@ if __name__ == "__main__":
             Path(qlearning_args.conf_file) if qlearning_args.conf_file else auto_conf
         )
         if conf_file is None or not conf_file.is_file():
-            print(f"[ERROR] 하이퍼파라미터 파일을 찾을 수 없습니다: {conf_file}")
+            print(f"[오류] 하이퍼파라미터 파일을 찾을 수 없습니다: {conf_file}")
             sys.exit(1)
         train_qlearning(
             env_id=qlearning_args.env,

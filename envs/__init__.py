@@ -1,4 +1,4 @@
-"""AdvancedTaxi Gymnasium environment package."""
+"""AdvancedTaxi Gymnasium 환경 패키지."""
 
 from gymnasium.envs.registration import register
 

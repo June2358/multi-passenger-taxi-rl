@@ -1,4 +1,4 @@
-"""End-to-end regression test for the direct AdvancedTaxi trainer."""
+"""AdvancedTaxi 직접 학습기의 전체 흐름 회귀 테스트."""
 
 from __future__ import annotations
 

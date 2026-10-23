@@ -1,4 +1,4 @@
-# Validated raw-discrete DQN configuration for Taxi-v4.
+# Taxi-v4의 검증된 원본 이산 관찰 DQN 설정.
 
 Taxi-v4:
   policy: MlpPolicy

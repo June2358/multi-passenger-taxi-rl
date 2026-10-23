@@ -35,18 +35,18 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
         super().__init__()
 
         if isinstance(num_passengers, bool) or not isinstance(num_passengers, Integral):
-            raise TypeError("num_passengers must be an integer")
+            raise TypeError("num_passengers는 정수여야 합니다.")
         if num_passengers <= 0:
-            raise ValueError("num_passengers must be greater than 0")
+            raise ValueError("num_passengers는 0보다 커야 합니다.")
         if isinstance(grid_size, bool) or not isinstance(grid_size, Integral):
-            raise TypeError("grid_size must be an integer")
+            raise TypeError("grid_size는 정수여야 합니다.")
         if grid_size < 2:
-            raise ValueError("grid_size must be at least 2")
+            raise ValueError("grid_size는 2 이상이어야 합니다.")
         if scenario_mode not in self._SCENARIO_MODES:
             modes = ", ".join(repr(mode) for mode in self._SCENARIO_MODES)
-            raise ValueError(f"scenario_mode must be one of: {modes}")
+            raise ValueError(f"scenario_mode는 다음 중 하나여야 합니다: {modes}")
         if not isinstance(start_at_center, (bool, np.bool_)):
-            raise TypeError("start_at_center must be a boolean")
+            raise TypeError("start_at_center는 boolean이어야 합니다.")
 
         try:
             validated_mix = np.asarray(
@@ -54,18 +54,18 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
                 dtype=float,
             )
         except (TypeError, ValueError) as exc:
-            raise ValueError("scenario_mix must contain three numeric weights") from exc
+            raise ValueError("scenario_mix에는 숫자 가중치가 세 개 있어야 합니다.") from exc
         if validated_mix.shape != (3,):
             raise ValueError(
-                "scenario_mix must be length-3 array-like for "
+                "scenario_mix는 다음 순서의 길이 3 배열이어야 합니다: "
                 "['random', 'cluster', 'complex']"
             )
         if not np.all(np.isfinite(validated_mix)):
-            raise ValueError("scenario_mix weights must be finite")
+            raise ValueError("scenario_mix 가중치는 유한해야 합니다.")
         mix_sum = float(validated_mix.sum())
         if np.any(validated_mix < 0) or not np.isfinite(mix_sum) or mix_sum <= 0:
             raise ValueError(
-                "scenario_mix weights must be non-negative and contain a positive value"
+                "scenario_mix 가중치는 0 이상이며 양수를 하나 이상 포함해야 합니다."
             )
 
         self.num_passengers = int(num_passengers)
@@ -103,16 +103,16 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
 
     def step(self, action):
         if isinstance(action, bool) or not isinstance(action, (Integral, np.integer)):
-            raise TypeError("action must be an integer passenger index")
+            raise TypeError("action은 정수 승객 인덱스여야 합니다.")
         action = int(action)
         if not self.action_space.contains(action):
             raise ValueError(
-                f"action must be between 0 and {self.num_passengers - 1}; got {action}"
+                f"action은 0~{self.num_passengers - 1}이어야 합니다. 실제 값: {action}"
             )
 
         target_p = self.passengers[action]
         if target_p[4] != 0:
-            raise ValueError(f"passenger {action} has already been served")
+            raise ValueError(f"승객 {action}은 이미 처리되었습니다 (already been served).")
 
         taxi_before = np.asarray(self.taxi_loc, dtype=int).copy()
         passenger_origin = np.asarray(target_p[:2], dtype=int).copy()
@@ -173,7 +173,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
                 np.array([int(self.grid_size * 0.2), int(self.grid_size * 0.8)]),  # Hub
             ]
             noise_range = max(5, int(self.grid_size * 0.05))  # 그리드 크기의 5% 또는 최소 5
-            
+
             for _ in range(self.num_passengers):
                 start_node_idx = int(self.np_random.choice([0, 2]))
                 start_center = centers[start_node_idx]
@@ -247,7 +247,7 @@ class AdvancedTimeAttackTaxiEnv(gym.Env):
 
                     move_noise = self.np_random.integers(-1, 2, size=2)
                     dest = np.clip(loc + move_noise, 0, self.grid_size - 1)
-                    
+
                     if np.array_equal(loc, dest):
                         dest[0] = dest[0] - 1 if dest[0] == max_coord else dest[0] + 1
 

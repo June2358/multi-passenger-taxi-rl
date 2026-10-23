@@ -36,7 +36,7 @@ TENSORBOARD_LOG_INTERVAL_EPISODES = 200
 
 
 def display_path(path: Path) -> str:
-    """Return a readable path without requiring it to be inside the project."""
+    """프로젝트 외부 경로도 허용하면서 읽기 쉬운 경로를 반환한다."""
     resolved_path = path.resolve()
     try:
         return str(resolved_path.relative_to(ROOT))
@@ -45,7 +45,7 @@ def display_path(path: Path) -> str:
 
 
 def derive_rng_seeds(seed: int | None) -> dict[str, int | None]:
-    """Derive independent environment and policy RNG streams from one seed."""
+    """seed 하나에서 독립적인 환경·정책 RNG 스트림을 파생한다."""
     names = ("train_env", "train_policy", "eval_env", "eval_policy")
     if seed is None:
         return dict.fromkeys(names)
@@ -62,12 +62,10 @@ def select_epsilon_greedy_action(
     epsilon: float,
     rng: np.random.Generator,
 ) -> int:
-    """Select an action from the full discrete action set.
+    """전체 이산 행동 집합에서 행동을 선택한다.
 
-    Taxi-v4's existing Q-Learning benchmark is unmasked, so exploration and
-    greedy selection both consider every action. Greedy ties are randomized to
-    avoid a permanent preference for the lowest action index.
-    """
+    기존 Taxi-v4 Q-Learning 기준선은 mask를 쓰지 않으므로 탐험과 탐욕 선택 모두
+    전체 행동을 고려한다. 탐욕 동점은 무작위로 해소해 낮은 인덱스 편향을 막는다."""
     if rng.random() < epsilon:
         return int(rng.integers(q_values.size))
 
@@ -83,7 +81,7 @@ def compute_td_target(
     *,
     terminated: bool,
 ) -> float:
-    """Compute a Q-Learning target, bootstrapping across time-limit truncation."""
+    """시간 제한 truncation에서도 bootstrap하는 Q-Learning 목표값을 계산한다."""
     if terminated:
         return float(reward)
     return float(reward + gamma * np.max(next_q_values))
@@ -94,7 +92,7 @@ def create_experiment_dir(
     env_id: str,
     exp_id: int | None,
 ) -> tuple[int, Path]:
-    """Create one run directory atomically without overwriting another run."""
+    """다른 실행을 덮어쓰지 않고 실행 디렉터리 하나를 원자적으로 만든다."""
     log_dir.mkdir(parents=True, exist_ok=True)
 
     if exp_id is not None:
@@ -103,7 +101,7 @@ def create_experiment_dir(
             exp_dir.mkdir()
         except FileExistsError as exc:
             raise FileExistsError(
-                f"Experiment directory already exists: {exp_dir}"
+                f"실험 디렉터리가 이미 있습니다 (already exists): {exp_dir}"
             ) from exc
         return exp_id, exp_dir
 
@@ -121,21 +119,21 @@ def load_hyperparams(conf_file: Path, env_id: str) -> dict[str, Any]:
     """YAML 파일에서 하이퍼파라미터를 로드합니다"""
     with open(conf_file, encoding="utf-8") as f:
         hyperparams = yaml.safe_load(f)
-    
+
     if not isinstance(hyperparams, dict) or env_id not in hyperparams:
-        raise ValueError(f"Environment {env_id} not found in {conf_file}")
+        raise ValueError(f"{conf_file}에서 환경 {env_id}를 찾을 수 없습니다.")
 
     unknown_top_level = set(hyperparams) - {env_id, "metadata"}
     if unknown_top_level:
         raise ValueError(
-            f"Unknown top-level config keys: {sorted(unknown_top_level)}"
+            f"알 수 없는 최상위 설정 키: {sorted(unknown_top_level)}"
         )
     if "metadata" in hyperparams and not isinstance(hyperparams["metadata"], dict):
-        raise ValueError("metadata must be a mapping")
+        raise ValueError("metadata는 mapping이어야 합니다.")
 
     env_hyperparams = hyperparams[env_id]
     if not isinstance(env_hyperparams, dict):
-        raise ValueError(f"Hyperparameters for {env_id} must be a mapping")
+        raise ValueError(f"{env_id}의 하이퍼파라미터는 mapping이어야 합니다.")
     unknown = set(env_hyperparams) - QLEARNING_HYPERPARAM_KEYS
     missing = QLEARNING_HYPERPARAM_KEYS - set(env_hyperparams)
     if unknown or missing:
@@ -144,19 +142,19 @@ def load_hyperparams(conf_file: Path, env_id: str) -> dict[str, Any]:
             details.append(f"unknown={sorted(unknown)}")
         if missing:
             details.append(f"missing={sorted(missing)}")
-        raise ValueError(f"Invalid Q-Learning hyperparameters: {', '.join(details)}")
+        raise ValueError(f"잘못된 Q-Learning 하이퍼파라미터: {', '.join(details)}")
     return env_hyperparams
 
 
 def _real_hyperparameter(value: Any, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{label} must be a real number")
+        raise ValueError(f"{label}는 실수여야 합니다.")
     return float(value)
 
 
 def _integer_hyperparameter(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral):
-        raise ValueError(f"{label} must be an integer")
+        raise ValueError(f"{label}는 정수여야 합니다.")
     return int(value)
 
 
@@ -166,7 +164,7 @@ def save_config(
     env_id: str,
     metadata: dict[str, Any],
 ) -> None:
-    """Save reusable hyperparameters separately from run metadata."""
+    """재사용할 하이퍼파라미터를 실행 메타데이터와 분리해 저장한다."""
     config = {env_id: hyperparams, "metadata": metadata}
     with open(config_path, 'w', encoding='utf-8') as f:
         yaml.safe_dump(
@@ -189,8 +187,8 @@ def train_qlearning(
 ):
     """
     Q-Learning 학습 함수 (RL-Zoo 스타일)
-    
-    Args:
+
+    인자:
         env_id: 환경 ID (예: "Taxi-v4")
         conf_file: 하이퍼파라미터 YAML 파일 경로
         n_timesteps: 총 학습 타임스텝 수
@@ -201,23 +199,23 @@ def train_qlearning(
     """
     if env_id != "Taxi-v4":
         raise ValueError(
-            f"Unsupported environment for tabular Q-Learning: {env_id}. "
-            "Only Taxi-v4 is supported."
+            f"Tabular Q-Learning에서 지원하지 않는 환경: {env_id}. "
+            "Taxi-v4만 지원합니다 (Only Taxi-v4 is supported)."
         )
     if isinstance(n_timesteps, bool) or not isinstance(n_timesteps, Integral):
-        raise ValueError("n_timesteps must be an integer")
+        raise ValueError("n_timesteps는 정수여야 합니다.")
     if n_timesteps < 1:
-        raise ValueError("n_timesteps must be at least 1")
+        raise ValueError("n_timesteps는 1 이상이어야 합니다.")
     if exp_id is not None:
         if isinstance(exp_id, bool) or not isinstance(exp_id, Integral):
-            raise ValueError("exp_id must be an integer")
+            raise ValueError("exp_id는 정수여야 합니다.")
         if exp_id < 1:
-            raise ValueError("exp_id must be at least 1")
+            raise ValueError("exp_id는 1 이상이어야 합니다.")
     if seed is not None:
         if isinstance(seed, bool) or not isinstance(seed, Integral):
-            raise ValueError("seed must be an integer")
+            raise ValueError("seed는 정수여야 합니다.")
         if seed < 0:
-            raise ValueError("seed must be non-negative")
+            raise ValueError("seed는 0 이상이어야 합니다.")
         seed = int(seed)
     n_timesteps = int(n_timesteps)
     if exp_id is not None:
@@ -225,14 +223,14 @@ def train_qlearning(
 
     if log_dir is None:
         log_dir = ROOT / "logs" / "qlearning"
-    
+
     if conf_file is None:
         env_dir = ROOT / "hyperparameters" / "taxi_v4"
         conf_file = env_dir / "qlearning.yml"
-    
+
     if not conf_file.exists():
-        raise FileNotFoundError(f"Hyperparameter file not found: {conf_file}")
-    
+        raise FileNotFoundError(f"하이퍼파라미터 파일을 찾을 수 없습니다: {conf_file}")
+
     hyperparams = load_hyperparams(conf_file, env_id)
 
     # 하이퍼파라미터 및 실행 인자를 실제 사용값으로 해석합니다.
@@ -251,19 +249,19 @@ def train_qlearning(
         "epsilon_decay_episodes",
     )
     if not np.isfinite(learning_rate) or not 0.0 < learning_rate <= 1.0:
-        raise ValueError("learning_rate must be finite and in (0, 1]")
+        raise ValueError("learning_rate는 유한한 (0, 1] 범위여야 합니다.")
     if not np.isfinite(gamma) or not 0.0 <= gamma <= 1.0:
-        raise ValueError("gamma must be finite and in [0, 1]")
+        raise ValueError("gamma는 유한한 [0, 1] 범위여야 합니다.")
     if (
         not np.isfinite(epsilon_start)
         or not np.isfinite(epsilon_end)
         or not 0.0 <= epsilon_end <= epsilon_start <= 1.0
     ):
         raise ValueError(
-            "epsilon values must satisfy 0 <= epsilon_end <= epsilon_start <= 1"
+            "epsilon은 0 <= epsilon_end <= epsilon_start <= 1을 만족해야 합니다."
         )
     if epsilon_decay_episodes < 1:
-        raise ValueError("epsilon_decay_episodes must be at least 1")
+        raise ValueError("epsilon_decay_episodes는 1 이상이어야 합니다.")
     rng_seeds = derive_rng_seeds(seed)
 
     resolved_hyperparams = {
@@ -278,13 +276,13 @@ def train_qlearning(
         "seed": seed,
         "rng_seeds": rng_seeds,
     }
-    
+
     # 실행 ID를 원자적으로 선점해 병렬 실행과 명시 ID의 덮어쓰기를 막는다.
     exp_id, exp_dir = create_experiment_dir(log_dir, env_id, exp_id)
-    
+
     config_path = exp_dir / "config.yml"
     save_config(config_path, resolved_hyperparams, env_id, run_metadata)
-    
+
     if verbose >= 1:
         print("=" * 60)
         print("Q-Learning 학습 시작")
@@ -294,7 +292,7 @@ def train_qlearning(
         print(f"  실험 ID: {exp_id}")
         print(f"  로그 디렉토리: {display_path(exp_dir)}")
         print("=" * 60)
-    
+
     resources = ExitStack()
     try:
         raw_env = gym.make(env_id)
@@ -490,9 +488,9 @@ def main():
     )
     args = parser.parse_args()
     if args.n_timesteps < 1:
-        parser.error("--n-timesteps must be at least 1")
+        parser.error("--n-timesteps는 1 이상이어야 합니다.")
     if args.seed is not None and args.seed < 0:
-        parser.error("--seed must be non-negative")
+        parser.error("--seed는 0 이상이어야 합니다.")
 
     train_qlearning(
         env_id="Taxi-v4",

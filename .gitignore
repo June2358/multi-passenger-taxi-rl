@@ -12,8 +12,8 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Pixi 환경
-.pixi/
+# 로컬 가상환경
+.venv/
 
 # Cursor 설정
 .cursor/

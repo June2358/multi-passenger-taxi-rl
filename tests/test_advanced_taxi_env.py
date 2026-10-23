@@ -1,4 +1,4 @@
-"""Regression tests for the AdvancedTimeAttackTaxiEnv contract."""
+"""AdvancedTimeAttackTaxiEnv 계약 회귀 테스트."""
 
 from __future__ import annotations
 

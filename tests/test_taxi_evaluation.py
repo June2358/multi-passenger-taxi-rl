@@ -1,4 +1,4 @@
-"""External contracts for the shared Taxi-v4 evaluator."""
+"""공유 Taxi-v4 평가기의 외부 계약 테스트."""
 
 import json
 import subprocess
@@ -44,7 +44,7 @@ def _optimal_qtable() -> np.ndarray:
     finally:
         env.close()
 
-    # Make optimal-action ties deterministic for exact cross-algorithm comparison.
+    # 알고리즘 간 정확한 비교를 위해 최적 행동의 동점을 결정적으로 해소한다.
     q_values -= np.arange(6, dtype=np.float64) * 1e-4
     return q_values.astype(np.float32)
 

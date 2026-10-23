@@ -81,8 +81,7 @@ class ComputeTdTargetTests(unittest.TestCase):
         self.assertEqual(target, 2.0)
 
     def test_nonterminated_transition_bootstraps(self):
-        # A truncated transition is represented by terminated=False: truncation
-        # deliberately is not an input to the TD target.
+        # truncation 전이는 terminated=False로 나타내며 TD 목표의 별도 입력으로 쓰지 않는다.
         target = compute_td_target(
             reward=2.0,
             gamma=0.9,

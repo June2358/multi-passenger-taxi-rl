@@ -1,4 +1,4 @@
-"""Regression tests for AdvancedTaxi evaluation and saved artifacts."""
+"""AdvancedTaxi 평가와 저장 산출물 회귀 테스트."""
 
 from __future__ import annotations
 

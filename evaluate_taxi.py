@@ -1,4 +1,4 @@
-"""Evaluate Taxi-v4 Q-Learning and DQN models on the same fixed seeds."""
+"""동일한 고정 seed에서 Taxi-v4 Q-Learning과 DQN 모델을 평가한다."""
 
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ EXPECTED_QTABLE_SHAPE = (500, 6)
 
 def evaluation_seeds(seed_start: int, num_seeds: int) -> list[int]:
     if seed_start < 0:
-        raise ValueError("seed_start must be non-negative")
+        raise ValueError("seed_start는 0 이상이어야 합니다.")
     if num_seeds < 1:
-        raise ValueError("num_seeds must be at least 1")
+        raise ValueError("num_seeds는 1 이상이어야 합니다.")
     return list(range(seed_start, seed_start + num_seeds))
 
 
@@ -41,15 +41,15 @@ def _summarize(
 
 def _load_qtable(model_path: Path) -> np.ndarray:
     if not model_path.is_file():
-        raise FileNotFoundError(f"Q-Learning model not found: {model_path}")
+        raise FileNotFoundError(f"Q-Learning 모델을 찾을 수 없습니다: {model_path}")
     q_table = np.load(model_path, allow_pickle=False)
     if q_table.shape != EXPECTED_QTABLE_SHAPE:
         raise ValueError(
-            f"Q-Learning table must have shape {EXPECTED_QTABLE_SHAPE}, "
-            f"got {q_table.shape}"
+            f"Q-Learning 테이블의 shape은 다음과 같아야 합니다: {EXPECTED_QTABLE_SHAPE}, "
+            f"실제 값: {q_table.shape}"
         )
     if not np.isfinite(q_table).all():
-        raise ValueError("Q-Learning table contains non-finite values")
+        raise ValueError("Q-Learning 테이블에 유한하지 않은 값이 있습니다.")
     return q_table
 
 
@@ -90,7 +90,7 @@ def evaluate_dqn(
     seeds: Sequence[int],
 ) -> dict[str, float | int]:
     if not model_path.is_file():
-        raise FileNotFoundError(f"DQN model not found: {model_path}")
+        raise FileNotFoundError(f"DQN 모델을 찾을 수 없습니다: {model_path}")
 
     model = DQN.load(model_path, device="cpu")
     env = gym.make(ENV_ID)
@@ -105,7 +105,7 @@ def evaluate_dqn(
             or model.action_space != env.action_space
         ):
             raise ValueError(
-                "DQN model spaces do not match Taxi-v4: "
+                "DQN 모델 공간이 Taxi-v4와 다릅니다 (do not match Taxi-v4): "
                 f"model=({model.observation_space}, {model.action_space}), "
                 f"environment=({env.observation_space}, {env.action_space})"
             )
@@ -124,7 +124,7 @@ def evaluate_dqn(
                     successes.append(bool(terminated))
                     break
             else:
-                raise RuntimeError("Taxi-v4 did not finish within its 200-step limit")
+                raise RuntimeError("Taxi-v4가 제한인 200스텝 이내에 종료되지 않았습니다.")
     finally:
         env.close()
 
@@ -139,7 +139,7 @@ def evaluate_models(
     num_seeds: int,
 ) -> dict[str, object]:
     if qlearning_model is None and dqn_model is None:
-        raise ValueError("At least one model path must be provided")
+        raise ValueError("모델 경로를 하나 이상 지정해야 합니다.")
 
     seeds = evaluation_seeds(seed_start, num_seeds)
     results: dict[str, dict[str, float | int]] = {}
@@ -158,7 +158,7 @@ def evaluate_models(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Compare Taxi-v4 models on identical fixed seeds",
+        description="동일한 고정 seed에서 Taxi-v4 모델 비교",
         allow_abbrev=False,
     )
     parser.add_argument("--qlearning-model", type=Path)

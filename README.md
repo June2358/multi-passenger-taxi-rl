@@ -37,32 +37,37 @@ reward = -step_cost / 100
 ## 설치와 테스트
 
 ```bash
-pixi install --locked
-pixi run test
+uv sync --locked
+uv run --locked python -m unittest discover -s tests -v
 ```
 
-`test` task는 전체 `unittest` 회귀 테스트를 실행합니다.
+전체 `unittest` 회귀 테스트를 실행합니다. uv가 없으면 [공식 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)를 따릅니다.
 
-잠금 환경은 Python 3.13, NumPy 2.5, Gymnasium 1.3, PyTorch 2.13, Stable-Baselines3·SB3-Contrib 2.9 계열을 사용합니다. 최신 Gymnasium 계약에 따라 표준 Taxi 기준선은 `Taxi-v4`입니다.
+Windows에서는 `run.cmd`를 더블클릭하면 학습을 시작하지 않고 학습기 도움말을 표시합니다.
+
+잠금 환경은 Python 3.14.9, NumPy 2.5.4, Gymnasium 1.4.0, PyTorch 2.14.1, Matplotlib 3.11.2, Stable-Baselines3·SB3-Contrib 2.9.0, RL-Zoo3 2.9.1을 사용합니다. Optuna는 큰 버전 변경을 피하기 위해 최신 4.x인 4.9.0을 유지합니다. 최신 Gymnasium 계약에 따라 표준 Taxi 기준선은 `Taxi-v4`입니다.
+
+기존 Pixi와 같은 CPU 환경을 사용하며 Python은 3.14.9로 고정합니다.
+GPU 실행·장기 학습 성능과 과거 결과의 수치 재현은 검증하지 않았습니다.
 
 ## AdvancedTaxi-v2 학습
 
 누출이 제거된 환경에서는 과거 tuned 설정을 폐기했습니다. 기본값은 보수적인 baseline 설정인 `hyperparameters/advanced_taxi/maskableppo_base.yml`입니다.
 
 ```bash
-pixi run python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 --seed 42 -P
+uv run --locked python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 --seed 42 -P
 ```
 
 환경 오버라이드:
 
 ```bash
-pixi run python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 --env-kwargs num_passengers:30 grid_size:120 scenario_mode:mixed
+uv run --locked python train_advanced_taxi_maskableppo.py --n-timesteps 1000000 --env-kwargs num_passengers:30 grid_size:120 scenario_mode:mixed
 ```
 
 학습 환경의 승객 수·그리드·시나리오 설정은 평가 환경에도 전달됩니다. 평가 전용 값은 `--eval-env-kwargs`로 다시 지정할 수 있습니다.
 
 ```bash
-pixi run python train_advanced_taxi_maskableppo.py --env-kwargs num_passengers:30 --eval-env-kwargs start_at_center:True
+uv run --locked python train_advanced_taxi_maskableppo.py --env-kwargs num_passengers:30 --eval-env-kwargs start_at_center:True
 ```
 
 - 기본 seed는 `42`입니다.
@@ -81,7 +86,7 @@ pixi run python train_advanced_taxi_maskableppo.py --env-kwargs num_passengers:3
 DQN:
 
 ```bash
-pixi run python train_rlzoo.py --algo dqn --env Taxi-v4 --n-timesteps 500000 --seed 42 -P
+uv run --locked python train_rlzoo.py --algo dqn --env Taxi-v4 --n-timesteps 500000 --seed 42 -P
 ```
 
 기본 `tuned` 모드는 Taxi-v4의 원본 `Discrete(500)` 상태를 사용합니다. 선형 Q head에 3-step return, 긴 탐색 구간, 빠른 target 갱신을 적용한 `dqn.yml`은 500k-step 독립 학습 seed 3개에서 각각 고정 평가 seed 100개를 모두 성공했습니다. `--param-mode base`는 같은 raw-discrete/linear 구조에서 학습 안정화 설정만 제외한 비교용 control입니다.
@@ -89,13 +94,13 @@ pixi run python train_rlzoo.py --algo dqn --env Taxi-v4 --n-timesteps 500000 --s
 Tabular Q-Learning baseline:
 
 ```bash
-pixi run python train_rlzoo.py --algo qlearning --env Taxi-v4 --n-timesteps 500000 --seed 42
+uv run --locked python train_rlzoo.py --algo qlearning --env Taxi-v4 --n-timesteps 500000 --seed 42
 ```
 
 위 명령과 직접 실행은 모두 tuned `qlearning.yml`을 사용합니다. 비교용 control은 `--param-mode base`로 실행합니다.
 
 ```bash
-pixi run python qlearning_train.py --n-timesteps 500000 --seed 42
+uv run --locked python qlearning_train.py --n-timesteps 500000 --seed 42
 ```
 
 Q-Learning은 termination에서만 bootstrap을 중단하고 truncation에서는 계속 bootstrap합니다. 탐욕 행동의 Q값이 같을 때는 무작위로 동률을 해소하며, 최종 평가는 학습과 독립적으로 파생한 seed와 RNG를 사용합니다. `seed`를 생략하면 비결정적으로 실행됩니다.
@@ -103,7 +108,7 @@ Q-Learning은 termination에서만 bootstrap을 중단하고 truncation에서는
 두 Taxi 모델을 동일한 고정 seed로 비교:
 
 ```bash
-pixi run python evaluate_taxi.py --qlearning-model logs/qlearning/Taxi-v4_1/qlearning_Taxi-v4_1_steps.npy --dqn-model logs/dqn/Taxi-v4_1/Taxi-v4.zip --seed-start 10000 --num-seeds 100
+uv run --locked python evaluate_taxi.py --qlearning-model logs/qlearning/Taxi-v4_1/qlearning_Taxi-v4_1_steps.npy --dqn-model logs/dqn/Taxi-v4_1/Taxi-v4.zip --seed-start 10000 --num-seeds 100
 ```
 
 평가기는 성공률, episode return과 길이의 평균·표준편차를 JSON으로 출력합니다. DQN은 현재 설정과 같은 `Discrete(500)` 관찰·`Discrete(6)` 행동 모델만 허용하며, 다른 wrapper나 정규화 통계를 추측해 복원하지 않습니다.
@@ -113,7 +118,7 @@ pixi run python evaluate_taxi.py --qlearning-model logs/qlearning/Taxi-v4_1/qlea
 평가할 실행 ID를 반드시 지정합니다.
 
 ```bash
-pixi run python evaluate_model.py --exp-id 1 --checkpoint final
+uv run --locked python evaluate_model.py --exp-id 1 --checkpoint final
 ```
 
 평가기의 기본 계약은 다음과 같습니다.
@@ -132,19 +137,19 @@ pixi run python evaluate_model.py --exp-id 1 --checkpoint final
 중앙 출발 OOD 비교:
 
 ```bash
-pixi run python evaluate_model.py --exp-id 1 --checkpoint final --center-start
+uv run --locked python evaluate_model.py --exp-id 1 --checkpoint final --center-start
 ```
 
 seed 범위와 평가 개수 변경:
 
 ```bash
-pixi run python evaluate_model.py --exp-id 1 --checkpoint final --seed-start 20000 --num-seeds 200
+uv run --locked python evaluate_model.py --exp-id 1 --checkpoint final --seed-start 20000 --num-seeds 200
 ```
 
 경로 시각화:
 
 ```bash
-pixi run python evaluate_model.py --exp-id 1 --checkpoint final --visualize --visualize-seed 10000
+uv run --locked python evaluate_model.py --exp-id 1 --checkpoint final --visualize --visualize-seed 10000
 ```
 
 PNG는 기본적으로 `visualizations/AdvancedTaxi-v2_<실행 ID>/<checkpoint>/<saved|center>/`에 저장되어 실행·checkpoint·평가 모드 사이에 서로 덮어쓰지 않습니다.
@@ -170,7 +175,7 @@ logs/
 TensorBoard:
 
 ```bash
-pixi run tensorboard --logdir logs/
+uv run --locked tensorboard --logdir logs/
 ```
 
 ## 현재 해석상의 한계

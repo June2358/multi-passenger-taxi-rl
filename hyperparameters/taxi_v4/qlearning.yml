@@ -1,4 +1,4 @@
-# Q-Learning tuned hyperparameters for Taxi-v4
+# Taxi-v4 Q-Learning 조정 하이퍼파라미터
 
 Taxi-v4:
   learning_rate: 0.2

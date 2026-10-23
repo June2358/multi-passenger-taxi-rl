@@ -1,4 +1,4 @@
-# Untuned raw-discrete DQN control for Taxi-v4.
+# Taxi-v4의 원본 이산 관찰 DQN 비교 대조군.
 
 Taxi-v4:
   policy: MlpPolicy
